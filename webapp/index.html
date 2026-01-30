@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Кофейня - Меню</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Шапка -->
+        <header class="header">
+            <div class="header-top">
+                <h1><i class="fas fa-coffee"></i> Coffee Masters</h1>
+                <div class="cart" onclick="openCart()">
+                    <i class="fas fa-shopping-cart"></i>
+                    <span id="cart-count">0</span>
+                </div>
+            </div>
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('coffee')">☕ Кофе</button>
+                <button class="tab" onclick="switchTab('tea')">🍵 Чай</button>
+                <button class="tab" onclick="switchTab('desserts')">🍰 Десерты</button>
+                <button class="tab" onclick="switchTab('breakfast')">🥐 Завтраки</button>
+            </div>
+        </header>
+
+        <!-- Фильтры -->
+        <div class="filters">
+            <div class="filter-buttons">
+                <button class="filter-btn active" data-type="all">Все</button>
+                <button class="filter-btn" data-type="hot">Горячее</button>
+                <button class="filter-btn" data-type="cold">Холодное</button>
+                <button class="filter-btn" data-type="new">Новинки</button>
+            </div>
+            <div class="order-type">
+                <label class="switch">
+                    <input type="checkbox" id="orderTypeToggle">
+                    <span class="slider">
+                        <span class="onsite">На месте</span>
+                        <span class="takeaway">Навынос</span>
+                    </span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Меню -->
+        <div class="menu" id="menu-container">
+            <!-- Товары загружаются через JavaScript -->
+        </div>
+
+        <!-- Корзина -->
+        <div class="cart-modal" id="cartModal">
+            <div class="cart-content">
+                <div class="cart-header">
+                    <h2><i class="fas fa-shopping-cart"></i> Корзина</h2>
+                    <button class="close-btn" onclick="closeCart()">×</button>
+                </div>
+                <div class="cart-items" id="cart-items">
+                    <!-- Товары в корзине -->
+                </div>
+                <div class="cart-total">
+                    <span>Итого:</span>
+                    <span id="total-price">0 ₽</span>
+                </div>
+                <div class="cart-actions">
+                    <button class="btn btn-secondary" onclick="clearCart()">
+                        <i class="fas fa-trash"></i> Очистить
+                    </button>
+                    <button class="btn btn-primary" onclick="checkout()">
+                        <i class="fas fa-check"></i> Оформить заказ
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Форма оформления заказа -->
+        <div class="checkout-modal" id="checkoutModal">
+            <div class="checkout-content">
+                <div class="checkout-header">
+                    <h2><i class="fas fa-receipt"></i> Оформление заказа</h2>
+                    <button class="close-btn" onclick="closeCheckout()">×</button>
+                </div>
+                <form id="orderForm">
+                    <div class="form-group">
+                        <label><i class="fas fa-user"></i> Имя</label>
+                        <input type="text" id="name" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label><i class="fas fa-phone"></i> Телефон</label>
+                        <input type="tel" id="phone" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label><i class="fas fa-clock"></i> Время получения</label>
+                        <div class="time-options">
+                            <label>
+                                <input type="radio" name="time" value="now" checked>
+                                <span>Как можно скорее</span>
+                            </label>
+                            <label>
+                                <input type="radio" name="time" value="later">
+                                <span>Ко времени</span>
+                            </label>
+                        </div>
+                        <input type="time" id="specificTime" style="display: none;">
+                    </div>
+
+                    <div class="form-group">
+                        <label><i class="fas fa-comment"></i> Комментарий</label>
+                        <textarea id="comment" rows="3"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label><i class="fas fa-share-alt"></i> Отправить в чат</label>
+                        <select id="chatOption">
+                            <option value="personal">Личные сообщения</option>
+                            <option value="group">Группа сотрудников</option>
+                        </select>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeCheckout()">
+                            Отмена
+                        </button>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-paper-plane"></i> Отправить заказ
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="products.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
