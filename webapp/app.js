@@ -1,40 +1,46 @@
-const tg = window.Telegram.WebApp;
+const tg = Telegram.WebApp;
 tg.expand();
 
-let menu = [];
 let cart = [];
+let menu;
 
 fetch("/menu.json")
-  .then(res => res.json())
+  .then(r => r.json())
   .then(data => {
     menu = data.categories;
     renderMenu();
   });
 
 function renderMenu() {
-  const container = document.getElementById("menu");
+  const root = document.getElementById("menu");
+
   menu.forEach(cat => {
-    container.innerHTML += `<h2>${cat.name}</h2>`;
-    cat.items.forEach(item => {
-      container.innerHTML += `
+    root.innerHTML += `<div class="category">${cat.name}</div>`;
+    cat.items.forEach(i => {
+      root.innerHTML += `
         <div class="item">
-          ${item.name} — ${item.price} ₽
-          <button onclick='add("${item.id}", "${item.name}", ${item.price})'>+</button>
-        </div>`;
+          <div>${i.name}<br><small>${i.price} ₽</small></div>
+          <button onclick='add("${i.id}", "${i.name}", ${i.price})'>+</button>
+        </div>
+      `;
     });
   });
 }
 
 function add(id, name, price) {
-  const found = cart.find(i => i.id === id);
-  if (found) found.qty++;
-  else cart.push({ id, name, price, qty: 1 });
+  const item = cart.find(i => i.id === id);
+  item ? item.qty++ : cart.push({ id, name, price, qty: 1 });
 }
 
 function submitOrder() {
+  if (!cart.length) {
+    tg.showAlert("Добавьте товары");
+    return;
+  }
+
   tg.sendData(JSON.stringify({
-    type: document.getElementById("orderType").value,
-    time: document.getElementById("orderTime").value,
+    type: orderType.value,
+    time: orderTime.value,
     items: cart
   }));
 }

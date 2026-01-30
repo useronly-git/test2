@@ -1,18 +1,28 @@
 {
   "categories": [
     {
-      "name": "Кофе",
+      "name": "☕ Кофе",
       "items": [
-        { "id": "latte", "name": "Латте", "price": 220 },
-        { "id": "cappuccino", "name": "Капучино", "price": 200 },
-        { "id": "americano", "name": "Американо", "price": 180 }
+        { "id": "espresso", "name": "Эспрессо", "price": 150 },
+        { "id": "americano", "name": "Американо", "price": 180 },
+        { "id": "cappuccino", "name": "Капучино", "price": 220 },
+        { "id": "latte", "name": "Латте", "price": 240 },
+        { "id": "raf", "name": "Раф", "price": 290 }
       ]
     },
     {
-      "name": "Еда",
+      "name": "🥛 Добавки",
       "items": [
-        { "id": "croissant", "name": "Круассан", "price": 150 },
-        { "id": "cheesecake", "name": "Чизкейк", "price": 280 }
+        { "id": "milk_alt", "name": "Альтернативное молоко", "price": 50 },
+        { "id": "syrup", "name": "Сироп", "price": 40 }
+      ]
+    },
+    {
+      "name": "🥐 Выпечка",
+      "items": [
+        { "id": "croissant", "name": "Круассан", "price": 160 },
+        { "id": "cheesecake", "name": "Чизкейк", "price": 290 },
+        { "id": "brownie", "name": "Брауни", "price": 210 }
       ]
     }
   ]
