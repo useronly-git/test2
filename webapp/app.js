@@ -1,46 +1,68 @@
 const tg = Telegram.WebApp;
 tg.expand();
 
-let cart = [];
-let menu;
+let cart = {};
+let total = 0;
 
 fetch("/menu.json")
   .then(r => r.json())
-  .then(data => {
-    menu = data.categories;
-    renderMenu();
-  });
+  .then(data => renderMenu(data.categories));
 
-function renderMenu() {
+function renderMenu(categories) {
   const root = document.getElementById("menu");
 
-  menu.forEach(cat => {
+  categories.forEach(cat => {
     root.innerHTML += `<div class="category">${cat.name}</div>`;
-    cat.items.forEach(i => {
+
+    cat.items.forEach(item => {
+      cart[item.id] = { ...item, qty: 0 };
+
       root.innerHTML += `
         <div class="item">
-          <div>${i.name}<br><small>${i.price} ₽</small></div>
-          <button onclick='add("${i.id}", "${i.name}", ${i.price})'>+</button>
+          <div>
+            <div class="item-name">${item.name}</div>
+            <div class="item-price">${item.price} ₽</div>
+          </div>
+          <div class="controls">
+            <button onclick="changeQty('${item.id}', -1)">−</button>
+            <span id="qty-${item.id}">0</span>
+            <button onclick="changeQty('${item.id}', 1)">+</button>
+          </div>
         </div>
       `;
     });
   });
 }
 
-function add(id, name, price) {
-  const item = cart.find(i => i.id === id);
-  item ? item.qty++ : cart.push({ id, name, price, qty: 1 });
+function changeQty(id, delta) {
+  const item = cart[id];
+  item.qty = Math.max(0, item.qty + delta);
+
+  document.getElementById(`qty-${id}`).innerText = item.qty;
+  recalc();
+}
+
+function recalc() {
+  total = 0;
+  Object.values(cart).forEach(i => {
+    total += i.price * i.qty;
+  });
+
+  document.getElementById("orderBtn").innerText =
+    total ? `Оформить заказ • ${total} ₽` : "Оформить заказ • 0 ₽";
 }
 
 function submitOrder() {
-  if (!cart.length) {
-    tg.showAlert("Добавьте товары");
+  const items = Object.values(cart).filter(i => i.qty > 0);
+
+  if (!items.length) {
+    tg.showAlert("Добавьте товары в заказ");
     return;
   }
 
   tg.sendData(JSON.stringify({
     type: orderType.value,
     time: orderTime.value,
-    items: cart
+    items
   }));
 }

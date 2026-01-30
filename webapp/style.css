@@ -1,64 +1,92 @@
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont;
-  background: #f5f2ee;
+  background: #f6f3ef;
 }
 
 header {
   background: #3e2a1f;
   color: white;
   padding: 16px;
+}
+
+.title {
   font-size: 20px;
-  text-align: center;
+  font-weight: 600;
 }
 
-.card {
-  background: white;
-  margin: 12px;
-  padding: 12px;
-  border-radius: 12px;
-}
-
-label {
+.subtitle {
   font-size: 12px;
-  opacity: 0.6;
+  opacity: 0.8;
+}
+
+.settings {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
 }
 
 select, input {
-  width: 100%;
+  flex: 1;
   padding: 10px;
-  margin-top: 6px;
   border-radius: 10px;
   border: 1px solid #ddd;
 }
 
 .category {
-  margin: 16px 12px 6px;
-  font-weight: bold;
+  padding: 12px;
+  font-weight: 600;
 }
 
 .item {
   background: white;
   margin: 6px 12px;
   padding: 12px;
-  border-radius: 12px;
+  border-radius: 14px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
 }
 
-.footer {
+.item-name {
+  font-size: 14px;
+}
+
+.item-price {
+  font-size: 13px;
+  opacity: 0.6;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.controls button {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: #3e2a1f;
+  color: white;
+  font-size: 18px;
+}
+
+footer {
   position: sticky;
   bottom: 0;
   background: white;
   padding: 12px;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.05);
 }
 
-button {
+#orderBtn {
   width: 100%;
   background: #3e2a1f;
   color: white;
   border: none;
   padding: 14px;
-  border-radius: 12px;
+  border-radius: 14px;
   font-size: 16px;
 }

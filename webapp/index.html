@@ -8,25 +8,29 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>☕ Coffee</header>
 
-  <div class="card">
-    <label>Тип заказа</label>
-    <select id="orderType">
-      <option>Навынос</option>
-      <option>На месте</option>
-    </select>
+<header>
+  <div class="title">☕ Coffee</div>
+  <div class="subtitle">Меню и онлайн-заказ</div>
+</header>
 
-    <label>Ко времени</label>
-    <input type="time" id="orderTime">
-  </div>
+<section class="settings">
+  <select id="orderType">
+    <option>Навынос</option>
+    <option>На месте</option>
+  </select>
 
-  <div id="menu"></div>
+  <input type="time" id="orderTime">
+</section>
 
-  <div class="footer">
-    <button onclick="submitOrder()">Оформить заказ</button>
-  </div>
+<main id="menu"></main>
 
-  <script src="app.js"></script>
+<footer>
+  <button id="orderBtn" onclick="submitOrder()">
+    Оформить заказ • 0 ₽
+  </button>
+</footer>
+
+<script src="app.js"></script>
 </body>
 </html>
