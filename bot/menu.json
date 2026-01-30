@@ -1,0 +1,19 @@
+{
+  "categories": [
+    {
+      "name": "Кофе",
+      "items": [
+        { "id": "latte", "name": "Латте", "price": 220 },
+        { "id": "cappuccino", "name": "Капучино", "price": 200 },
+        { "id": "americano", "name": "Американо", "price": 180 }
+      ]
+    },
+    {
+      "name": "Еда",
+      "items": [
+        { "id": "croissant", "name": "Круассан", "price": 150 },
+        { "id": "cheesecake", "name": "Чизкейк", "price": 280 }
+      ]
+    }
+  ]
+}
