@@ -3,73 +3,105 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Кофейня - Меню</title>
+    <title>Coffee Masters - Заказ кофе</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
         <!-- Шапка -->
         <header class="header">
             <div class="header-top">
-                <h1><i class="fas fa-coffee"></i> Coffee Masters</h1>
-                <div class="cart" onclick="openCart()">
-                    <i class="fas fa-shopping-cart"></i>
-                    <span id="cart-count">0</span>
+                <div class="logo">
+                    <i class="fas fa-coffee"></i>
+                    <h1>Coffee Masters</h1>
+                </div>
+                <div class="header-actions">
+                    <div class="cart-icon" onclick="openCart()">
+                        <i class="fas fa-shopping-cart"></i>
+                        <span class="cart-count" id="cart-count">0</span>
+                    </div>
+                    <div class="user-icon">
+                        <i class="fas fa-user"></i>
+                    </div>
                 </div>
             </div>
+
             <div class="tabs">
-                <button class="tab active" onclick="switchTab('coffee')">☕ Кофе</button>
-                <button class="tab" onclick="switchTab('tea')">🍵 Чай</button>
-                <button class="tab" onclick="switchTab('desserts')">🍰 Десерты</button>
-                <button class="tab" onclick="switchTab('breakfast')">🥐 Завтраки</button>
+                <button class="tab active" data-category="all">
+                    <i class="fas fa-star"></i> Все
+                </button>
+                <button class="tab" data-category="coffee">
+                    <i class="fas fa-coffee"></i> Кофе
+                </button>
+                <button class="tab" data-category="tea">
+                    <i class="fas fa-mug-hot"></i> Чай
+                </button>
+                <button class="tab" data-category="desserts">
+                    <i class="fas fa-cookie-bite"></i> Десерты
+                </button>
+                <button class="tab" data-category="breakfast">
+                    <i class="fas fa-egg"></i> Завтраки
+                </button>
             </div>
         </header>
 
-        <!-- Фильтры -->
-        <div class="filters">
-            <div class="filter-buttons">
-                <button class="filter-btn active" data-type="all">Все</button>
-                <button class="filter-btn" data-type="hot">Горячее</button>
-                <button class="filter-btn" data-type="cold">Холодное</button>
-                <button class="filter-btn" data-type="new">Новинки</button>
+        <!-- Фильтры и переключатель -->
+        <div class="controls">
+            <div class="filters">
+                <button class="filter-btn active" data-filter="all">Все</button>
+                <button class="filter-btn" data-filter="hot">Горячие</button>
+                <button class="filter-btn" data-filter="cold">Холодные</button>
+                <button class="filter-btn" data-filter="new">Новинки</button>
+                <button class="filter-btn" data-filter="popular">Популярные</button>
             </div>
-            <div class="order-type">
-                <label class="switch">
-                    <input type="checkbox" id="orderTypeToggle">
-                    <span class="slider">
-                        <span class="onsite">На месте</span>
-                        <span class="takeaway">Навынос</span>
-                    </span>
-                </label>
+
+            <div class="order-type-toggle">
+                <div class="toggle-label">
+                    <span class="onsite-label"><i class="fas fa-chair"></i> На месте</span>
+                    <label class="switch">
+                        <input type="checkbox" id="orderTypeToggle">
+                        <span class="slider"></span>
+                    </label>
+                    <span class="takeaway-label"><i class="fas fa-bag-shopping"></i> Навынос</span>
+                </div>
             </div>
         </div>
 
         <!-- Меню -->
-        <div class="menu" id="menu-container">
-            <!-- Товары загружаются через JavaScript -->
-        </div>
+        <main class="menu-container" id="menu-container">
+            <!-- Товары будут загружены через JavaScript -->
+        </main>
 
         <!-- Корзина -->
-        <div class="cart-modal" id="cartModal">
-            <div class="cart-content">
-                <div class="cart-header">
-                    <h2><i class="fas fa-shopping-cart"></i> Корзина</h2>
-                    <button class="close-btn" onclick="closeCart()">×</button>
+        <div class="cart-overlay" id="cartOverlay"></div>
+        <div class="cart-sidebar" id="cartSidebar">
+            <div class="cart-header">
+                <h2><i class="fas fa-shopping-cart"></i> Корзина</h2>
+                <button class="close-btn" onclick="closeCart()">×</button>
+            </div>
+
+            <div class="cart-items" id="cart-items">
+                <!-- Товары в корзине -->
+                <div class="empty-cart" id="empty-cart">
+                    <i class="fas fa-shopping-basket"></i>
+                    <p>Корзина пуста</p>
+                    <p class="empty-cart-sub">Добавьте товары из меню</p>
                 </div>
-                <div class="cart-items" id="cart-items">
-                    <!-- Товары в корзине -->
-                </div>
+            </div>
+
+            <div class="cart-footer">
                 <div class="cart-total">
                     <span>Итого:</span>
-                    <span id="total-price">0 ₽</span>
+                    <span class="total-price" id="total-price">0 ₽</span>
                 </div>
                 <div class="cart-actions">
-                    <button class="btn btn-secondary" onclick="clearCart()">
+                    <button class="btn btn-outline" onclick="clearCart()">
                         <i class="fas fa-trash"></i> Очистить
                     </button>
-                    <button class="btn btn-primary" onclick="checkout()">
+                    <button class="btn btn-primary" onclick="checkout()" id="checkout-btn" disabled>
                         <i class="fas fa-check"></i> Оформить заказ
                     </button>
                 </div>
@@ -77,65 +109,126 @@
         </div>
 
         <!-- Форма оформления заказа -->
+        <div class="modal-overlay" id="checkoutOverlay"></div>
         <div class="checkout-modal" id="checkoutModal">
             <div class="checkout-content">
                 <div class="checkout-header">
                     <h2><i class="fas fa-receipt"></i> Оформление заказа</h2>
                     <button class="close-btn" onclick="closeCheckout()">×</button>
                 </div>
+
                 <form id="orderForm">
-                    <div class="form-group">
-                        <label><i class="fas fa-user"></i> Имя</label>
-                        <input type="text" id="name" required>
+                    <div class="form-section">
+                        <h3><i class="fas fa-user-circle"></i> Ваши данные</h3>
+                        <div class="form-group">
+                            <label for="name">Имя *</label>
+                            <input type="text" id="name" placeholder="Введите ваше имя" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="phone">Телефон *</label>
+                            <input type="tel" id="phone" placeholder="+7 (999) 123-45-67" required>
+                        </div>
                     </div>
 
-                    <div class="form-group">
-                        <label><i class="fas fa-phone"></i> Телефон</label>
-                        <input type="tel" id="phone" required>
-                    </div>
-
-                    <div class="form-group">
-                        <label><i class="fas fa-clock"></i> Время получения</label>
+                    <div class="form-section">
+                        <h3><i class="fas fa-clock"></i> Время получения</h3>
                         <div class="time-options">
-                            <label>
+                            <label class="time-option">
                                 <input type="radio" name="time" value="now" checked>
-                                <span>Как можно скорее</span>
+                                <div class="time-option-content">
+                                    <i class="fas fa-bolt"></i>
+                                    <div>
+                                        <strong>Как можно скорее</strong>
+                                        <small>Приготовим за 10-15 минут</small>
+                                    </div>
+                                </div>
                             </label>
-                            <label>
+                            <label class="time-option">
                                 <input type="radio" name="time" value="later">
-                                <span>Ко времени</span>
+                                <div class="time-option-content">
+                                    <i class="fas fa-calendar"></i>
+                                    <div>
+                                        <strong>Ко времени</strong>
+                                        <small>Выберите удобное время</small>
+                                    </div>
+                                </div>
                             </label>
                         </div>
-                        <input type="time" id="specificTime" style="display: none;">
+                        <div class="form-group" id="timePickerContainer" style="display: none;">
+                            <label for="specificTime">Выберите время</label>
+                            <input type="time" id="specificTime" value="14:30">
+                        </div>
                     </div>
 
-                    <div class="form-group">
-                        <label><i class="fas fa-comment"></i> Комментарий</label>
-                        <textarea id="comment" rows="3"></textarea>
+                    <div class="form-section">
+                        <h3><i class="fas fa-comment"></i> Комментарий к заказу</h3>
+                        <div class="form-group">
+                            <textarea id="comment" placeholder="Например: добавить сироп, без сахара, приготовить покрепче..." rows="3"></textarea>
+                        </div>
                     </div>
 
-                    <div class="form-group">
-                        <label><i class="fas fa-share-alt"></i> Отправить в чат</label>
-                        <select id="chatOption">
-                            <option value="personal">Личные сообщения</option>
-                            <option value="group">Группа сотрудников</option>
-                        </select>
+                    <div class="form-section">
+                        <h3><i class="fas fa-paper-plane"></i> Отправить заказ</h3>
+                        <div class="form-group">
+                            <label>Куда отправить заказ?</label>
+                            <div class="chat-options">
+                                <label class="chat-option">
+                                    <input type="radio" name="chatOption" value="personal" checked>
+                                    <div class="chat-option-content">
+                                        <i class="fas fa-user"></i>
+                                        <div>
+                                            <strong>Личные сообщения</strong>
+                                            <small>Только вам</small>
+                                        </div>
+                                    </div>
+                                </label>
+                                <label class="chat-option">
+                                    <input type="radio" name="chatOption" value="group">
+                                    <div class="chat-option-content">
+                                        <i class="fas fa-users"></i>
+                                        <div>
+                                            <strong>Группа кофейни</strong>
+                                            <small>Увидят все сотрудники</small>
+                                        </div>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="order-summary">
+                        <h3><i class="fas fa-list-check"></i> Итоги заказа</h3>
+                        <div class="summary-items" id="summary-items">
+                            <!-- Товары будут добавлены здесь -->
+                        </div>
+                        <div class="summary-total">
+                            <div class="summary-row">
+                                <span>Тип заказа:</span>
+                                <span id="order-type-summary">На месте</span>
+                            </div>
+                            <div class="summary-row total">
+                                <span>Итого к оплате:</span>
+                                <span class="total-amount" id="summary-total">0 ₽</span>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="form-actions">
-                        <button type="button" class="btn btn-secondary" onclick="closeCheckout()">
-                            Отмена
+                        <button type="button" class="btn btn-outline" onclick="closeCheckout()">
+                            <i class="fas fa-arrow-left"></i> Вернуться
                         </button>
-                        <button type="submit" class="btn btn-primary">
+                        <button type="submit" class="btn btn-success">
                             <i class="fas fa-paper-plane"></i> Отправить заказ
                         </button>
                     </div>
                 </form>
             </div>
         </div>
+
+        <!-- Уведомления -->
+        <div class="notifications" id="notifications"></div>
     </div>
 
-    <script src="products.js"></script>
     <script src="script.js"></script>
 </body>
 </html>
