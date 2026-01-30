@@ -1,48 +1,6 @@
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-# Получаем путь к корню проекта
-BASE_DIR = Path(__file__).parent
-
-# Загрузка .env файла
-env_path = BASE_DIR / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-    print(f"✅ .env файл загружен из: {env_path}")
-else:
-    print("⚠️ ВНИМАНИЕ: .env файл не найден! Создайте файл .env с BOT_TOKEN")
-
-# Токен бота - обязательный параметр
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-
-if not BOT_TOKEN:
-    print("""
-    ⚠️ ВНИМАНИЕ: BOT_TOKEN не найден!
-
-    Создайте файл .env в корне проекта со следующим содержимым:
-
-    BOT_TOKEN=ваш_токен_бота_от_BotFather
-
-    Как получить токен:
-    1. Откройте Telegram
-    2. Найдите @BotFather
-    3. Создайте нового бота: /newbot
-    4. Скопируйте токен
-    """)
-
-# Web App URL (можно оставить пустым для тестов)
-WEBAPP_URL = os.getenv('WEBAPP_URL', '')
-
-# ID чата администратора (опционально)
-ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID')
-
-# Настройки базы данных
-DATABASE_PATH = BASE_DIR / 'coffee.db'
-
-# =========== ТЕСТОВЫЕ ТОВАРЫ ДЛЯ КОФЕЙНИ ===========
-PRODUCTS = [
-    # Кофе горячий
+// Тестовые данные для кофейни
+const products = [
+    // Кофе горячий
     {
         "id": 1,
         "name": "Эспрессо",
@@ -52,8 +10,8 @@ PRODUCTS = [
         "description": "Классический крепкий кофе, 30 мл",
         "image": "https://images.unsplash.com/photo-1510591509098-f4fdc6d0ff04?w=400&h=300&fit=crop",
         "volume": "30 мл",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["классика", "крепкий"]
     },
     {
@@ -65,8 +23,8 @@ PRODUCTS = [
         "description": "Двойная порция классического эспрессо",
         "image": "https://images.unsplash.com/photo-1559056199-641a0ac8b55e?w=400&h=300&fit=crop",
         "volume": "60 мл",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["двойной", "бодрящий"]
     },
     {
@@ -78,8 +36,8 @@ PRODUCTS = [
         "description": "Эспрессо с добавлением горячей воды",
         "image": "https://images.unsplash.com/photo-1561047029-3000c68339ca?w=400&h=300&fit=crop",
         "volume": "180 мл",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["нежный", "ароматный"]
     },
     {
@@ -91,8 +49,8 @@ PRODUCTS = [
         "description": "Идеальный баланс кофе, молока и пенки",
         "image": "https://images.unsplash.com/photo-1534778101976-62847782c213?w=400&h=300&fit=crop",
         "volume": "200 мл",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["молочный", "нежный"]
     },
     {
@@ -104,8 +62,8 @@ PRODUCTS = [
         "description": "Больше молока, мягкий вкус, нежная пенка",
         "image": "https://images.unsplash.com/photo-1570196911496-66bd58a5b7b4?w=400&h=300&fit=crop",
         "volume": "250 мл",
-        "isNew": True,
-        "popular": True,
+        "isNew": true,
+        "popular": true,
         "tags": ["молочный", "нежный", "новинка"]
     },
     {
@@ -117,8 +75,8 @@ PRODUCTS = [
         "description": "Двойной эспрессо с микропенкой",
         "image": "https://images.unsplash.com/photo-1510707577715-2c3c3b7f5b3c?w=400&h=300&fit=crop",
         "volume": "180 мл",
-        "isNew": True,
-        "popular": False,
+        "isNew": true,
+        "popular": false,
         "tags": ["крепкий", "микропена", "новинка"]
     },
     {
@@ -130,8 +88,8 @@ PRODUCTS = [
         "description": "Кофе со сливками и ванильным сиропом",
         "image": "https://images.unsplash.com/photo-1587734195507-6f5e8a2543c4?w=400&h=300&fit=crop",
         "volume": "250 мл",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["сладкий", "сливочный", "ваниль"]
     },
     {
@@ -143,12 +101,12 @@ PRODUCTS = [
         "description": "Кофе с шоколадом и молочной пенкой",
         "image": "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400&h=300&fit=crop",
         "volume": "220 мл",
-        "isNew": False,
-        "popular": False,
+        "isNew": false,
+        "popular": false,
         "tags": ["шоколадный", "сладкий"]
     },
 
-    # Кофе холодный
+    // Кофе холодный
     {
         "id": 9,
         "name": "Айс Американо",
@@ -158,8 +116,8 @@ PRODUCTS = [
         "description": "Холодный американо со льдом",
         "image": "https://images.unsplash.com/photo-1461023058943-07fcbe16d735?w=400&h=300&fit=crop",
         "volume": "300 мл",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["освежающий", "летний"]
     },
     {
@@ -171,8 +129,8 @@ PRODUCTS = [
         "description": "Холодный латте со льдом",
         "image": "https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=400&h=300&fit=crop",
         "volume": "350 мл",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["молочный", "летний"]
     },
     {
@@ -184,8 +142,8 @@ PRODUCTS = [
         "description": "Кофе холодного заваривания",
         "image": "https://images.unsplash.com/photo-1553909489-cd47e0907980?w=400&h=300&fit=crop",
         "volume": "300 мл",
-        "isNew": True,
-        "popular": False,
+        "isNew": true,
+        "popular": false,
         "tags": ["холодное заваривание", "новинка"]
     },
     {
@@ -197,12 +155,12 @@ PRODUCTS = [
         "description": "Взбитый холодный кофе со льдом",
         "image": "https://images.unsplash.com/photo-1572490122747-3968b75cc699?w=400&h=300&fit=crop",
         "volume": "400 мл",
-        "isNew": True,
-        "popular": True,
+        "isNew": true,
+        "popular": true,
         "tags": ["взбитый", "летний", "новинка"]
     },
 
-    # Чай
+    // Чай
     {
         "id": 13,
         "name": "Черный чай",
@@ -212,8 +170,8 @@ PRODUCTS = [
         "description": "Классический черный чай",
         "image": "https://images.unsplash.com/photo-1564890369478-c89ca2d9c423?w=400&h=300&fit=crop",
         "volume": "250 мл",
-        "isNew": False,
-        "popular": False,
+        "isNew": false,
+        "popular": false,
         "tags": ["классика", "чай"]
     },
     {
@@ -225,8 +183,8 @@ PRODUCTS = [
         "description": "Свежий зеленый чай",
         "image": "https://images.unsplash.com/photo-1597481499755-58e5e8e0b8c8?w=400&h=300&fit=crop",
         "volume": "250 мл",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["зеленый", "чай"]
     },
     {
@@ -238,8 +196,8 @@ PRODUCTS = [
         "description": "Черный чай с ароматом бергамота",
         "image": "https://images.unsplash.com/photo-1576092768241-dec1383d8c54?w=400&h=300&fit=crop",
         "volume": "250 мл",
-        "isNew": False,
-        "popular": False,
+        "isNew": false,
+        "popular": false,
         "tags": ["ароматный", "чай"]
     },
     {
@@ -251,12 +209,12 @@ PRODUCTS = [
         "description": "Фруктовый чай с ягодами",
         "image": "https://images.unsplash.com/photo-1560343090-f0409e92791a?w=400&h=300&fit=crop",
         "volume": "250 мл",
-        "isNew": True,
-        "popular": True,
+        "isNew": true,
+        "popular": true,
         "tags": ["фруктовый", "ягодный", "новинка"]
     },
 
-    # Десерты
+    // Десерты
     {
         "id": 17,
         "name": "Круассан",
@@ -266,8 +224,8 @@ PRODUCTS = [
         "description": "Свежий французский круассан",
         "image": "https://images.unsplash.com/photo-1555507036-ab794f27d2e9?w=400&h=300&fit=crop",
         "weight": "80 г",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["выпечка", "сладкий"]
     },
     {
@@ -279,8 +237,8 @@ PRODUCTS = [
         "description": "Классический чизкейк",
         "image": "https://images.unsplash.com/photo-1563729784474-d77dbb933a9e?w=400&h=300&fit=crop",
         "weight": "150 г",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["чизкейк", "классика"]
     },
     {
@@ -292,8 +250,8 @@ PRODUCTS = [
         "description": "Итальянский десерт с кофе",
         "image": "https://images.unsplash.com/photo-1571877227200-a0d98ea607e9?w=400&h=300&fit=crop",
         "weight": "150 г",
-        "isNew": True,
-        "popular": True,
+        "isNew": true,
+        "popular": true,
         "tags": ["итальянский", "кофейный", "новинка"]
     },
     {
@@ -305,12 +263,12 @@ PRODUCTS = [
         "description": "Французское пирожное",
         "image": "https://images.unsplash.com/photo-1569929238190-869dfc6a8e41?w=400&h=300&fit=crop",
         "weight": "30 г",
-        "isNew": False,
-        "popular": False,
+        "isNew": false,
+        "popular": false,
         "tags": ["пирожное", "нежное"]
     },
 
-    # Завтраки
+    // Завтраки
     {
         "id": 21,
         "name": "Сырники",
@@ -320,8 +278,8 @@ PRODUCTS = [
         "description": "Творожные сырники со сметаной",
         "image": "https://images.unsplash.com/photo-1565299624946-b28f40a0ca4b?w=400&h=300&fit=crop",
         "weight": "200 г",
-        "isNew": False,
-        "popular": True,
+        "isNew": false,
+        "popular": true,
         "tags": ["завтрак", "творог"]
     },
     {
@@ -333,8 +291,8 @@ PRODUCTS = [
         "description": "Омлет со свежими овощами",
         "image": "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&h=300&fit=crop",
         "weight": "250 г",
-        "isNew": False,
-        "popular": False,
+        "isNew": false,
+        "popular": false,
         "tags": ["завтрак", "яйца"]
     },
     {
@@ -346,8 +304,8 @@ PRODUCTS = [
         "description": "Хрустящая гранола с греческим йогуртом",
         "image": "https://images.unsplash.com/photo-1488477181946-6428a0291777?w=400&h=300&fit=crop",
         "weight": "200 г",
-        "isNew": True,
-        "popular": True,
+        "isNew": true,
+        "popular": true,
         "tags": ["завтрак", "здоровый", "новинка"]
     },
     {
@@ -359,14 +317,13 @@ PRODUCTS = [
         "description": "Тост с авокадо и яйцом-пашот",
         "image": "https://images.unsplash.com/photo-1525351484163-7529414344d8?w=400&h=300&fit=crop",
         "weight": "180 г",
-        "isNew": True,
-        "popular": True,
+        "isNew": true,
+        "popular": true,
         "tags": ["завтрак", "авокадо", "новинка"]
     }
-]
+];
 
-print(f"✅ Загружено {len(PRODUCTS)} товаров для кофейни")
-print(f"   Кофе: {len([p for p in PRODUCTS if p['category'] == 'coffee'])} позиций")
-print(f"   Чай: {len([p for p in PRODUCTS if p['category'] == 'tea'])} позиций")
-print(f"   Десерты: {len([p for p in PRODUCTS if p['category'] == 'desserts'])} позиций")
-print(f"   Завтраки: {len([p for p in PRODUCTS if p['category'] == 'breakfast'])} позиций")
+// Экспорт для использования в других файлах
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = products;
+}
