@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+aiofiles
+sqlalchemy[asyncio]
+aiosqlite
+alembic
+aiogram
+pyjwt
+python-dotenv
+pydantic-settings
+pillow
