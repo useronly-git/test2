@@ -1,0 +1,1578 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# СЕТЕВАЯ ДИАГНОСТИКА А1 — Версия для Linux / macOS
+# ==============================================================================
+# Используются ТОЛЬКО встроенные системные утилиты (без sudo).
+# Совместимость: bash 3.2+ (macOS default), bash 4+/5+ (Linux).
+# Запуск: chmod +x test10.sh && ./test10.sh
+# ==============================================================================
+
+# --- Глобальные параметры безопасности скрипта ---
+# Не прерывать скрипт при ошибках отдельных команд (отказоустойчивость)
+set +e
+# Но отслеживать ошибки в пайпах (если bash >= 3)
+set -o pipefail 2>/dev/null || true
+
+# ==============================================================================
+# 1. ПОДГОТОВКА ОКРУЖЕНИЯ И ПЕРЕМЕННЫХ
+# ==============================================================================
+
+# --- Определяем операционную систему ---
+# uname -s возвращает "Linux" или "Darwin" (macOS)
+OS_TYPE="$(uname -s)"
+
+# --- Определяем директорию, в которой лежит скрипт ---
+# BASH_SOURCE[0] содержит путь к текущему скрипту
+# dirname извлекает каталог; cd + pwd даёт абсолютный путь
+DIAG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- Пути и константы ---
+LOG_FILE="${DIAG_DIR}/A1.txt"           # Файл отчёта
+SUPPORT_EMAIL="support150@a1.by"        # Email для отправки отчёта
+
+# --- Подавляем локализацию в выводе системных утилит ---
+# Это нужно чтобы парсить вывод команд (ping, traceroute и т.д.) на английском
+export LC_ALL=C
+export LANG=C
+
+# --- Цветовые коды ANSI для вывода в терминал ---
+# Используем tput если доступен, иначе raw ANSI-коды
+if command -v tput &>/dev/null && tput colors &>/dev/null; then
+    COLOR_RED="$(tput setaf 1)"
+    COLOR_GREEN="$(tput setaf 2)"
+    COLOR_YELLOW="$(tput setaf 3)"
+    COLOR_CYAN="$(tput setaf 6)"
+    COLOR_GRAY="$(tput setaf 8 2>/dev/null || tput setaf 7)"
+    COLOR_RESET="$(tput sgr0)"
+else
+    COLOR_RED="\033[0;31m"
+    COLOR_GREEN="\033[0;32m"
+    COLOR_YELLOW="\033[0;33m"
+    COLOR_CYAN="\033[0;36m"
+    COLOR_GRAY="\033[0;90m"
+    COLOR_RESET="\033[0m"
+fi
+
+# ==============================================================================
+# --- ФУНКЦИИ ОФОРМЛЕНИЯ И ИНСТРУМЕНТЫ ---
+# ==============================================================================
+
+# --- write_step: Печатает название текущего шага диагностики ---
+# Аргументы: $1 = номер шага (напр. "1/12"), $2 = описание
+write_step() {
+    local num="$1" text="$2"
+    # Массив иконок для каждого шага (ассоциативный массив не поддерживается в bash 3.2)
+    local icons=("" "🔍" "💻" "🛠️" "🌐" "📡" "🧱" "🗺️" "🛤️" "⏱️" "📊" "🚀" "📦")
+    # Извлекаем номер шага из строки вида "3/12"
+    local idx="${num%%/*}"
+    local icon="${icons[$idx]:-•}"
+    # Дополняем текст точками до 45 символов для выравнивания
+    local padded
+    padded="$(printf '%-45s' "$text" | tr ' ' '.')"
+    printf " %s ${COLOR_GRAY}[%s]${COLOR_RESET} %s" "$icon" "$num" "$padded"
+}
+
+# --- write_status_ok: Печатает зелёный статус [ГОТОВО] ---
+write_status_ok() {
+    printf " ${COLOR_GREEN}[ГОТОВО]${COLOR_RESET}\n"
+}
+
+# --- write_log_header: Записывает заголовок секции в лог-файл ---
+# Аргумент: $1 = заголовок секции
+write_log_header() {
+    local title="$1"
+    printf "\n############### [ %s ] ###############\n\n" "$title" >> "$LOG_FILE"
+}
+
+# --- write_log: Записывает строку в лог с временной меткой ---
+# Аргумент: $1 = сообщение
+write_log() {
+    local msg="$1"
+    printf "%s | %s\n" "$(date '+%H:%M:%S')" "$msg" >> "$LOG_FILE"
+}
+
+# --- test_port_quick: Проверяет доступность TCP-порта без sudo ---
+# Аргументы: $1 = IP/хост, $2 = порт, $3 = таймаут в секундах (по умолчанию 1)
+# Возвращает: 0 (успех) или 1 (неудача)
+test_port_quick() {
+    local host="$1" port="$2" timeout="${3:-1}"
+    # Способ 1: /dev/tcp — встроенная фича bash (самый портативный)
+    # Запускаем в подоболочке с таймаутом через timeout или фоновый процесс
+    if command -v timeout &>/dev/null; then
+        # Linux: есть утилита timeout из coreutils
+        timeout "$timeout" bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null
+        return $?
+    else
+        # macOS: нет timeout, используем фоновый процесс с kill
+        ( bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null ) &
+        local pid=$!
+        # Ждём завершения в пределах таймаута
+        local i=0
+        while [ $i -lt "$((timeout * 10))" ]; do
+            # Проверяем жив ли процесс
+            if ! kill -0 "$pid" 2>/dev/null; then
+                # Процесс завершился — проверяем код возврата
+                wait "$pid" 2>/dev/null
+                return $?
+            fi
+            sleep 0.1
+            i=$((i + 1))
+        done
+        # Таймаут — убиваем процесс
+        kill "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        return 1
+    fi
+}
+
+# --- measure_dns: Измеряет время DNS-запроса в миллисекундах ---
+# Аргументы: $1 = DNS-сервер (пусто = системный), $2 = имя хоста
+# Выводит: время в миллисекундах
+measure_dns() {
+    local server="$1" hostname="$2"
+    local start_ns end_ns elapsed_ms
+
+    # Засекаем время. date +%s%N даёт наносекунды на Linux.
+    # На macOS %N не поддерживается, поэтому используем python/perl как фоллбэк.
+    if date +%s%N &>/dev/null && [ "$(date +%s%N)" != "%N" ] 2>/dev/null; then
+        start_ns="$(date +%s%N)"
+    else
+        # macOS fallback: perl даёт микросекунды
+        start_ns="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time()*1e9' 2>/dev/null || echo 0)"
+    fi
+
+    # Выполняем DNS-запрос
+    if [ -n "$server" ]; then
+        # Если указан конкретный DNS-сервер — используем dig или host
+        if command -v dig &>/dev/null; then
+            dig +short +time=2 +tries=1 "@${server}" "$hostname" A &>/dev/null
+        elif command -v host &>/dev/null; then
+            host -W 2 "$hostname" "$server" &>/dev/null
+        else
+            # Фоллбэк: ping один раз (сработает только для системного DNS)
+            ping -c 1 -W 2 "$hostname" &>/dev/null
+        fi
+    else
+        # Системный DNS — просто резолвим имя
+        if command -v dig &>/dev/null; then
+            dig +short +time=2 +tries=1 "$hostname" A &>/dev/null
+        elif command -v host &>/dev/null; then
+            host -W 2 "$hostname" &>/dev/null
+        else
+            ping -c 1 -W 2 "$hostname" &>/dev/null
+        fi
+    fi
+
+    # Замеряем финальное время
+    if date +%s%N &>/dev/null && [ "$(date +%s%N)" != "%N" ] 2>/dev/null; then
+        end_ns="$(date +%s%N)"
+    else
+        end_ns="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time()*1e9' 2>/dev/null || echo 0)"
+    fi
+
+    # Считаем разницу в миллисекундах
+    if [ "$start_ns" -gt 0 ] 2>/dev/null && [ "$end_ns" -gt 0 ] 2>/dev/null; then
+        elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+        echo "$elapsed_ms"
+    else
+        echo "N/A"
+    fi
+}
+
+# --- cmd_exists: Проверяет наличие команды в системе ---
+# Аргумент: $1 = имя команды
+cmd_exists() {
+    command -v "$1" &>/dev/null
+}
+
+# --- safe_read: Безопасное чтение пользовательского ввода ---
+# Работает даже если stdin перенаправлен
+safe_read() {
+    local prompt="$1" varname="$2"
+    # Пытаемся читать из /dev/tty (реальный терминал), если доступен
+    if [ -t 0 ]; then
+        printf "%s" "$prompt"
+        IFS= read -r "$varname"
+    elif [ -e /dev/tty ]; then
+        printf "%s" "$prompt" > /dev/tty
+        IFS= read -r "$varname" < /dev/tty
+    else
+        printf "%s" "$prompt"
+        IFS= read -r "$varname"
+    fi
+}
+
+# ==============================================================================
+# --- ИНТЕРФЕЙС И ВВОД ДАННЫХ ---
+# ==============================================================================
+
+# Очистка экрана
+clear 2>/dev/null || printf "\033c"
+
+# Баннер (ASCII-арт логотипа A1)
+printf "${COLOR_RED}"
+cat << 'BANNER'
+    █████╗  ██╗
+   ██╔══██╗███║
+   ███████║╚██║
+   ██╔══██║ ██║
+   ██║  ██║ ╚═╝
+   ╚═╝  ╚═╝
+   СЕТЕВАЯ ДИАГНОСТИКА
+BANNER
+printf "${COLOR_RESET}"
+echo "--------------------------------------------------"
+
+# --- Ввод номера лицевого счёта ---
+ACC_NUM=""
+while true; do
+    printf "\n ${COLOR_CYAN}[?] Введите номер вашего лицевого счета:${COLOR_RESET}\n"
+    safe_read "  > " ACC_NUM
+    # Убираем пробелы по краям
+    ACC_NUM="$(echo "$ACC_NUM" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+    # Проверка: не пустой
+    if [ -z "$ACC_NUM" ]; then
+        printf " ${COLOR_RED}[!] Номер счета обязателен.${COLOR_RESET}\n"
+        continue
+    fi
+    # Проверка: только латиница, цифры и подчёркивание
+    if ! echo "$ACC_NUM" | grep -qE '^[a-zA-Z0-9_]+$'; then
+        printf " ${COLOR_RED}[!] Ошибка: используйте только латинские буквы, цифры и '_'.${COLOR_RESET}\n"
+        continue
+    fi
+    break
+done
+
+# --- Ввод целевого сайта (необязательно) ---
+TARGET_SITE=""
+printf "\n ${COLOR_CYAN}[?] Введите адрес сайта или нажмите ENTER для общей диагностики:${COLOR_RESET}\n"
+safe_read "  > " RAW_INPUT
+
+# Извлекаем доменное имя из произвольного ввода (URL, текст и т.п.)
+if [ -n "$RAW_INPUT" ]; then
+    # Приводим к нижнему регистру, извлекаем домен регуляркой через grep/sed
+    CLEAN_INPUT="$(echo "$RAW_INPUT" | tr '[:upper:]' '[:lower:]')"
+    # Удаляем протокол если есть
+    CLEAN_INPUT="$(echo "$CLEAN_INPUT" | sed 's|^https\?://||')"
+    # Берём всё до первого / или пробела
+    CLEAN_INPUT="$(echo "$CLEAN_INPUT" | sed 's|[/ ].*||')"
+    # Удаляем www.
+    CLEAN_INPUT="$(echo "$CLEAN_INPUT" | sed 's|^www\.||')"
+    # Удаляем завершающую точку
+    CLEAN_INPUT="$(echo "$CLEAN_INPUT" | sed 's|\.$||')"
+    # Простая валидация: домен должен содержать хотя бы одну точку
+    if echo "$CLEAN_INPUT" | grep -qE '^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}$'; then
+        TARGET_SITE="$CLEAN_INPUT"
+    fi
+fi
+
+# --- Формируем списки целей в зависимости от ввода ---
+if [ -n "$TARGET_SITE" ]; then
+    DIAG_LABEL="$TARGET_SITE"
+    TARGETS="$TARGET_SITE 8.8.8.8 1.1.1.1"
+    MTR_DEST="$TARGET_SITE"
+    SSL_TEST_HOST="$TARGET_SITE"
+else
+    DIAG_LABEL="Общая диагностика"
+    TARGETS="google.com ya.ru onliner.by 8.8.8.8 1.1.1.1"
+    MTR_DEST="8.8.8.8"
+    SSL_TEST_HOST="a1.by"
+fi
+
+# ==============================================================================
+# --- ПОИСК РЕЗЕРВНОГО УЗЛА (DNS/ICMP FALLBACK) ---
+# ==============================================================================
+# Пробуем найти первый отвечающий публичный DNS
+RELIABLE_HOSTS="8.8.8.8 1.1.1.1 77.88.8.8 9.9.9.9"
+MAIN_DNS=""
+printf " ${COLOR_CYAN}[?] Поиск оптимального эталонного узла... ${COLOR_RESET}"
+
+for h in $RELIABLE_HOSTS; do
+    # Проверяем доступность порта 53 (DNS) через TCP
+    if test_port_quick "$h" 53 1; then
+        MAIN_DNS="$h"
+        break
+    fi
+done
+# Если ничего не найдено — берём 8.8.8.8 по умолчанию
+if [ -z "$MAIN_DNS" ]; then
+    MAIN_DNS="8.8.8.8"
+fi
+printf "${COLOR_GREEN}%s${COLOR_RESET}\n" "$MAIN_DNS"
+
+# --- Удаляем старые файлы диагностики ---
+# find с -maxdepth 1 чтобы не лезть в подпапки
+find "$DIAG_DIR" -maxdepth 1 -name "A1*.txt" -type f -delete 2>/dev/null
+find "$DIAG_DIR" -maxdepth 1 -name "A1*.sha256" -type f -delete 2>/dev/null
+
+# --- Инициализируем лог-файл ---
+{
+    echo "ОТЧЕТ ДИАГНОСТИКИ СЕТИ"
+    echo "Лицевой счет: $ACC_NUM"
+    echo "Режим: $DIAG_LABEL"
+    echo "Запуск: $(date)"
+    echo "ОС: $OS_TYPE ($(uname -r))"
+} > "$LOG_FILE"
+
+printf " ${COLOR_YELLOW}Анализ запущен. Пожалуйста, подождите (около 5-6 минут)...${COLOR_RESET}\n\n"
+
+# ==============================================================================
+# --- 1. СИСТЕМА ---
+# ==============================================================================
+write_step "1/12" "Состояние системы"
+write_log_header "ИНФОРМАЦИЯ О СИСТЕМЕ"
+
+# --- Имя хоста и ядро ---
+write_log "Хост: $(hostname 2>/dev/null || echo 'N/A')"
+write_log "Ядро: $(uname -srm)"
+
+# --- Информация о процессоре ---
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: sysctl содержит информацию о CPU
+    CPU_NAME="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'N/A')"
+    CPU_CORES="$(sysctl -n hw.ncpu 2>/dev/null || echo '?')"
+    # Средняя загрузка (load average за 1/5/15 мин)
+    LOAD_AVG="$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' || uptime | sed 's/.*load average[s]*: //')"
+else
+    # Linux: /proc/cpuinfo
+    CPU_NAME="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ //' || echo 'N/A')"
+    CPU_CORES="$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo '?')"
+    LOAD_AVG="$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}' || uptime | sed 's/.*load average[s]*: //')"
+fi
+write_log "ЦП: $CPU_NAME | Ядер: $CPU_CORES | Load avg: $LOAD_AVG"
+
+# --- Информация об оперативной памяти ---
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: общий объём через sysctl, свободная — через vm_stat
+    TOTAL_MEM_BYTES="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+    TOTAL_MEM_GB="$(awk "BEGIN {printf \"%.2f\", $TOTAL_MEM_BYTES / 1073741824}")"
+    # vm_stat выдаёт страницы по 4096 байт (обычно), считаем свободные + inactive
+    PAGE_SIZE="$(vm_stat 2>/dev/null | head -1 | grep -oE '[0-9]+' || echo 4096)"
+    FREE_PAGES="$(vm_stat 2>/dev/null | awk '/Pages free/ {gsub(/\./,"",$3); print $3}')"
+    INACTIVE_PAGES="$(vm_stat 2>/dev/null | awk '/Pages inactive/ {gsub(/\./,"",$3); print $3}')"
+    FREE_PAGES="${FREE_PAGES:-0}"
+    INACTIVE_PAGES="${INACTIVE_PAGES:-0}"
+    FREE_MEM_GB="$(awk "BEGIN {printf \"%.2f\", ($FREE_PAGES + $INACTIVE_PAGES) * $PAGE_SIZE / 1073741824}")"
+    write_log "ОЗУ: Свободно ~${FREE_MEM_GB} ГБ из ${TOTAL_MEM_GB} ГБ (free+inactive)"
+else
+    # Linux: /proc/meminfo (значения в kB)
+    MEM_TOTAL="$(awk '/^MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    MEM_AVAIL="$(awk '/^MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    TOTAL_MEM_GB="$(awk "BEGIN {printf \"%.2f\", $MEM_TOTAL / 1048576}")"
+    FREE_MEM_GB="$(awk "BEGIN {printf \"%.2f\", $MEM_AVAIL / 1048576}")"
+    write_log "ОЗУ: Доступно ${FREE_MEM_GB} ГБ из ${TOTAL_MEM_GB} ГБ"
+fi
+
+# --- Дисковая подсистема ---
+write_log_header "ДИСКОВАЯ ПОДСИСТЕМА"
+# df -h показывает диски в человекочитаемом формате
+# Исключаем виртуальные ФС (tmpfs, devtmpfs и т.д.)
+if [ "$OS_TYPE" = "Darwin" ]; then
+    df -h 2>/dev/null | grep -E '^/dev/' >> "$LOG_FILE"
+else
+    df -h 2>/dev/null | grep -vE '^(tmpfs|devtmpfs|overlay|shm|Filesystem)' >> "$LOG_FILE"
+fi
+
+# Проверяем свободное место на корневом разделе
+ROOT_FREE_KB="$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')"
+ROOT_TOTAL_KB="$(df -k / 2>/dev/null | awk 'NR==2 {print $2}')"
+if [ -n "$ROOT_FREE_KB" ] && [ "$ROOT_FREE_KB" -gt 0 ] 2>/dev/null; then
+    ROOT_FREE_GB="$(awk "BEGIN {printf \"%.2f\", $ROOT_FREE_KB / 1048576}")"
+    ROOT_TOTAL_GB="$(awk "BEGIN {printf \"%.2f\", $ROOT_TOTAL_KB / 1048576}")"
+    ROOT_FREE_PCT="$(awk "BEGIN {printf \"%.1f\", $ROOT_FREE_KB * 100 / $ROOT_TOTAL_KB}")"
+    write_log "Раздел /: Свободно ${ROOT_FREE_GB} ГБ из ${ROOT_TOTAL_GB} ГБ (${ROOT_FREE_PCT}%)"
+
+    # Предупреждение если места мало
+    ROOT_FREE_GB_INT="${ROOT_FREE_GB%%.*}"
+    ROOT_FREE_PCT_INT="${ROOT_FREE_PCT%%.*}"
+    if [ "${ROOT_FREE_GB_INT:-0}" -lt 5 ] 2>/dev/null || [ "${ROOT_FREE_PCT_INT:-100}" -lt 10 ] 2>/dev/null; then
+        write_log "  ! ВНИМАНИЕ: Критически мало места на корневом разделе."
+    fi
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 2. СЕТЕВЫЕ ИНТЕРФЕЙСЫ И ТЕСТ MTU ---
+# ==============================================================================
+write_step "2/12" "Сетевые адаптеры и MTU"
+write_log_header "СЕТЕВЫЕ ИНТЕРФЕЙСЫ"
+
+# Список активных интерфейсов с IP-адресами
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: ifconfig — единственный надёжный вариант без sudo
+    ifconfig 2>/dev/null | grep -E '(^[a-z]|inet |status|media)' >> "$LOG_FILE"
+else
+    # Linux: ip addr — современная замена ifconfig
+    if cmd_exists ip; then
+        ip -br addr 2>/dev/null >> "$LOG_FILE"
+        echo "" >> "$LOG_FILE"
+        ip addr show 2>/dev/null >> "$LOG_FILE"
+    elif cmd_exists ifconfig; then
+        ifconfig 2>/dev/null >> "$LOG_FILE"
+    fi
+fi
+
+# --- Тест MTU: ищем максимальный размер пакета без фрагментации ---
+write_log_header "ПОИСК ОПТИМАЛЬНОГО MTU"
+MTU_FOUND=0
+
+# Параметр запрета фрагментации: -M do (Linux) или -D (macOS)
+if [ "$OS_TYPE" = "Darwin" ]; then
+    PING_DF_FLAG="-D"
+else
+    PING_DF_FLAG="-M do"
+fi
+
+# Перебираем размеры от 1472 до 1300 с шагом 10 (грубый поиск)
+for size in $(seq 1472 -10 1300); do
+    # ping с запретом фрагментации: -s размер_данных, -c 1 пакет, -W 1 таймаут
+    MTU_RESULT="$(ping -c 1 -W 1 $PING_DF_FLAG -s "$size" "$MAIN_DNS" 2>&1)"
+    # Проверяем что НЕТ ошибки фрагментации
+    if ! echo "$MTU_RESULT" | grep -qiE "frag|too long|message too long|would exceed|mtu"; then
+        # Нашли приблизительный размер — точный поиск с шагом 1
+        for exact_size in $(seq $((size + 9)) -1 "$size"); do
+            EXACT_RESULT="$(ping -c 1 -W 1 $PING_DF_FLAG -s "$exact_size" "$MAIN_DNS" 2>&1)"
+            if ! echo "$EXACT_RESULT" | grep -qiE "frag|too long|message too long|would exceed|mtu"; then
+                # Оптимальный MTU = размер данных + 28 байт (IP 20 + ICMP 8)
+                OPTIMAL_MTU=$((exact_size + 28))
+                write_log "Оптимальный MTU: $OPTIMAL_MTU (размер данных ICMP: $exact_size байт)"
+                MTU_FOUND=1
+                break
+            fi
+        done
+        break
+    fi
+done
+
+if [ "$MTU_FOUND" -eq 0 ]; then
+    write_log "  ! Не удалось определить оптимальный MTU. Возможна блокировка ICMP провайдером."
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 3. БРАНДМАУЭР, ПРОКСИ И ВРЕМЯ ---
+# ==============================================================================
+write_step "3/12" "Защита и время"
+write_log_header "БРАНДМАУЭР И ПРОКСИ"
+
+# --- Проверяем файрвол ---
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: pfctl (Packet Filter) — основной файрвол. Без sudo показывает статус.
+    PF_STATUS="$(pfctl -s info 2>&1 | head -5 || echo 'Недоступен без sudo')"
+    write_log "PF (Packet Filter): $PF_STATUS"
+    # Application Firewall (socketfilterfw) — без sudo может не работать
+    ALF_STATUS="$(defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null || echo 'N/A')"
+    case "$ALF_STATUS" in
+        0) write_log "Application Firewall: Выключен" ;;
+        1) write_log "Application Firewall: Включен (стандартный режим)" ;;
+        2) write_log "Application Firewall: Включен (блокировать все входящие)" ;;
+        *) write_log "Application Firewall: Не удалось определить" ;;
+    esac
+else
+    # Linux: проверяем iptables (без sudo — может быть ограничено)
+    if cmd_exists iptables; then
+        IPT_RESULT="$(iptables -L -n 2>&1)"
+        if echo "$IPT_RESULT" | grep -q "Permission denied\|Operation not permitted"; then
+            write_log "iptables: Недоступен без sudo (нужны права root)"
+        else
+            write_log "iptables:"
+            echo "$IPT_RESULT" | head -20 >> "$LOG_FILE"
+        fi
+    fi
+    # nftables — новый файрвол
+    if cmd_exists nft; then
+        NFT_RESULT="$(nft list ruleset 2>&1)"
+        if echo "$NFT_RESULT" | grep -q "Permission denied\|Operation not permitted"; then
+            write_log "nftables: Недоступен без sudo"
+        else
+            write_log "nftables:"
+            echo "$NFT_RESULT" | head -20 >> "$LOG_FILE"
+        fi
+    fi
+    # ufw — простой фронтенд к iptables (Ubuntu/Debian)
+    if cmd_exists ufw; then
+        UFW_STATUS="$(ufw status 2>&1 || echo 'N/A')"
+        write_log "UFW: $UFW_STATUS"
+    fi
+fi
+
+# --- Проверяем системный прокси ---
+# Через переменные окружения
+if [ -n "$http_proxy" ] || [ -n "$HTTP_PROXY" ] || [ -n "$https_proxy" ] || [ -n "$HTTPS_PROXY" ]; then
+    write_log "Прокси (env): http=${http_proxy:-${HTTP_PROXY:-нет}} | https=${https_proxy:-${HTTPS_PROXY:-нет}}"
+else
+    write_log "Системный прокси (env): Не обнаружен"
+fi
+
+# macOS: системные настройки прокси через scutil/networksetup
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # Получаем активный сетевой сервис
+    ACTIVE_SERVICE="$(networksetup -listallnetworkservices 2>/dev/null | grep -v '^\*' | head -3)"
+    for svc in $ACTIVE_SERVICE; do
+        HTTP_PROXY_INFO="$(networksetup -getwebproxy "$svc" 2>/dev/null)"
+        if echo "$HTTP_PROXY_INFO" | grep -q "Enabled: Yes"; then
+            write_log "macOS прокси ($svc): $HTTP_PROXY_INFO"
+        fi
+    done
+fi
+
+# --- Проверяем VPN-интерфейсы ---
+write_log "--- Проверка VPN ---"
+VPN_DETECTED=""
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: ищем utun/ipsec/ppp интерфейсы (типичные для VPN)
+    VPN_IFS="$(ifconfig 2>/dev/null | grep -E '^(utun|ipsec|ppp)[0-9]' | awk -F: '{print $1}')"
+    if [ -n "$VPN_IFS" ]; then
+        VPN_DETECTED="$VPN_IFS"
+    fi
+    # Также проверяем через scutil
+    SCUTIL_VPN="$(scutil --nc list 2>/dev/null | grep -i 'connected' || true)"
+    if [ -n "$SCUTIL_VPN" ]; then
+        VPN_DETECTED="${VPN_DETECTED:+$VPN_DETECTED, }scutil: $SCUTIL_VPN"
+    fi
+else
+    # Linux: ищем tun/tap/wg интерфейсы
+    if cmd_exists ip; then
+        VPN_IFS="$(ip link show 2>/dev/null | grep -oE '(tun|tap|wg|ppp|ipsec)[0-9]+' || true)"
+    else
+        VPN_IFS="$(ifconfig 2>/dev/null | grep -oE '(tun|tap|wg|ppp|ipsec)[0-9]+' || true)"
+    fi
+    if [ -n "$VPN_IFS" ]; then
+        VPN_DETECTED="$VPN_IFS"
+    fi
+    # Проверяем WireGuard
+    if [ -d /etc/wireguard ] && ls /etc/wireguard/*.conf &>/dev/null; then
+        VPN_DETECTED="${VPN_DETECTED:+$VPN_DETECTED, }WireGuard конфиг найден"
+    fi
+fi
+
+if [ -n "$VPN_DETECTED" ]; then
+    write_log "Активный VPN: $VPN_DETECTED"
+else
+    write_log "Активный VPN: Не обнаружен"
+fi
+
+# --- Синхронизация времени ---
+write_log_header "СИНХРОНИЗАЦИЯ ВРЕМЕНИ"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: sntp (без sudo) для проверки NTP
+    if cmd_exists sntp; then
+        SNTP_RESULT="$(sntp -S time.apple.com 2>&1 || echo 'Ошибка запроса NTP')"
+        write_log "NTP (sntp): $SNTP_RESULT"
+    fi
+else
+    # Linux: timedatectl показывает статус синхронизации
+    if cmd_exists timedatectl; then
+        timedatectl status 2>/dev/null >> "$LOG_FILE"
+    elif cmd_exists ntpq; then
+        ntpq -p 2>/dev/null >> "$LOG_FILE"
+    elif cmd_exists chronyc; then
+        chronyc tracking 2>/dev/null >> "$LOG_FILE"
+    else
+        write_log "Утилиты NTP (timedatectl/ntpq/chronyc) не найдены."
+    fi
+fi
+write_log "Текущее время: $(date)"
+
+# --- Файл hosts ---
+write_log_header "ФАЙЛ HOSTS"
+HOSTS_FILE="/etc/hosts"
+if [ -f "$HOSTS_FILE" ]; then
+    # Фильтруем: убираем комментарии, пустые строки, localhost
+    HOSTS_CUSTOM="$(grep -vE '^\s*#|^\s*$|localhost|broadcasthost|::1' "$HOSTS_FILE" 2>/dev/null || true)"
+    if [ -n "$HOSTS_CUSTOM" ]; then
+        write_log "ВНИМАНИЕ: Обнаружены потенциально влияющие записи в файле hosts:"
+        echo "$HOSTS_CUSTOM" | while IFS= read -r line; do
+            write_log "  > $line"
+        done
+    else
+        write_log "Файл hosts не содержит сторонних правок (только стандартные записи)."
+    fi
+else
+    write_log "Файл hosts не найден по стандартному пути."
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 4. WI-FI И ETHERNET ---
+# ==============================================================================
+write_step "4/12" "Параметры подключения и сигнал"
+write_log_header "АНАЛИЗ ФИЗИЧЕСКОГО УРОВНЯ"
+
+IS_WIFI=0
+WIFI_AVG_SIGNAL=0
+WIFI_MIN_SIGNAL=0
+WIFI_MAX_SIGNAL=0
+
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: airport — скрытая утилита Apple для Wi-Fi
+    AIRPORT="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+    if [ -x "$AIRPORT" ]; then
+        WIFI_INFO="$("$AIRPORT" -I 2>/dev/null)"
+        if echo "$WIFI_INFO" | grep -q "SSID"; then
+            IS_WIFI=1
+            write_log "Обнаружено Wi-Fi соединение. Сбор статистики (10 сек)..."
+            SIGNALS=""
+            # Собираем 10 замеров уровня сигнала с интервалом 1 сек
+            for i in $(seq 1 10); do
+                # RSSI — уровень сигнала в dBm (чем ближе к 0, тем лучше)
+                RSSI="$("$AIRPORT" -I 2>/dev/null | awk '/agrCtlRSSI/ {print $2}')"
+                if [ -n "$RSSI" ]; then
+                    SIGNALS="$SIGNALS $RSSI"
+                fi
+                sleep 1
+            done
+
+            if [ -n "$SIGNALS" ]; then
+                # Вычисляем min/max/avg через awk
+                WIFI_STATS="$(echo "$SIGNALS" | tr ' ' '\n' | grep -E '^-?[0-9]+$' | awk '
+                    BEGIN {min=999; max=-999; sum=0; n=0}
+                    {
+                        if ($1 < min) min=$1;
+                        if ($1 > max) max=$1;
+                        sum+=$1; n++
+                    }
+                    END {if(n>0) printf "%d %d %.1f %d\n", min, max, sum/n, max-min; else print "0 0 0 0"}
+                ')"
+                WIFI_MIN_SIGNAL="$(echo "$WIFI_STATS" | awk '{print $1}')"
+                WIFI_MAX_SIGNAL="$(echo "$WIFI_STATS" | awk '{print $2}')"
+                WIFI_AVG_SIGNAL="$(echo "$WIFI_STATS" | awk '{print $3}')"
+                WIFI_VARIATION="$(echo "$WIFI_STATS" | awk '{print $4}')"
+                write_log "RSSI: Min: ${WIFI_MIN_SIGNAL}dBm | Max: ${WIFI_MAX_SIGNAL}dBm | Avg: ${WIFI_AVG_SIGNAL}dBm (Вариативность: ${WIFI_VARIATION}dBm)"
+            fi
+            echo "$WIFI_INFO" >> "$LOG_FILE"
+
+            # Сканирование окружающих Wi-Fi сетей
+            write_log_header "ОКРУЖАЮЩИЕ WI-FI СЕТИ"
+            SCAN_RESULT="$("$AIRPORT" -s 2>/dev/null)"
+            if [ -n "$SCAN_RESULT" ]; then
+                echo "$SCAN_RESULT" >> "$LOG_FILE"
+                NET_COUNT="$(echo "$SCAN_RESULT" | tail -n +2 | wc -l | tr -d ' ')"
+                write_log "Обнаружено соседних сетей: $NET_COUNT"
+                if [ "$NET_COUNT" -gt 15 ] 2>/dev/null; then
+                    write_log "  ! Эфир сильно зашумлен (более 15 сетей). Рекомендуется использовать 5GHz."
+                fi
+            fi
+        else
+            write_log "Тип подключения: Проводное (Ethernet) или Wi-Fi не подключен"
+            ifconfig 2>/dev/null | grep -A5 "^en" >> "$LOG_FILE"
+        fi
+    else
+        write_log "Утилита airport не найдена. Определение Wi-Fi невозможно."
+    fi
+else
+    # Linux: iwconfig / iw / nmcli для Wi-Fi
+    WIFI_IFACE=""
+    if cmd_exists iwconfig; then
+        # iwconfig без аргументов покажет Wi-Fi интерфейсы
+        WIFI_CHECK="$(iwconfig 2>&1 | grep -v 'no wireless' | grep -E 'ESSID|Signal')"
+        if [ -n "$WIFI_CHECK" ]; then
+            IS_WIFI=1
+            WIFI_IFACE="$(iwconfig 2>&1 | grep 'ESSID' | head -1 | awk '{print $1}')"
+        fi
+    elif cmd_exists iw; then
+        # iw dev показывает беспроводные интерфейсы
+        WIFI_IFACE="$(iw dev 2>/dev/null | awk '/Interface/ {print $2}' | head -1)"
+        if [ -n "$WIFI_IFACE" ]; then
+            LINK_INFO="$(iw dev "$WIFI_IFACE" link 2>/dev/null)"
+            if echo "$LINK_INFO" | grep -q "Connected"; then
+                IS_WIFI=1
+            fi
+        fi
+    elif cmd_exists nmcli; then
+        WIFI_CHECK="$(nmcli -t -f TYPE,STATE dev 2>/dev/null | grep 'wifi:connected')"
+        if [ -n "$WIFI_CHECK" ]; then
+            IS_WIFI=1
+            WIFI_IFACE="$(nmcli -t -f TYPE,DEVICE dev 2>/dev/null | grep 'wifi:' | cut -d: -f2 | head -1)"
+        fi
+    fi
+
+    if [ "$IS_WIFI" -eq 1 ]; then
+        write_log "Обнаружено Wi-Fi соединение ($WIFI_IFACE). Сбор статистики (10 сек)..."
+        SIGNALS=""
+        for i in $(seq 1 10); do
+            SIG=""
+            if cmd_exists iwconfig && [ -n "$WIFI_IFACE" ]; then
+                # iwconfig выдаёт Signal level в dBm
+                SIG="$(iwconfig "$WIFI_IFACE" 2>/dev/null | grep -oE 'Signal level=?-?[0-9]+' | grep -oE '\-?[0-9]+$')"
+            elif cmd_exists iw && [ -n "$WIFI_IFACE" ]; then
+                SIG="$(iw dev "$WIFI_IFACE" link 2>/dev/null | grep 'signal:' | awk '{print $2}')"
+            fi
+            if [ -n "$SIG" ]; then
+                SIGNALS="$SIGNALS $SIG"
+            fi
+            sleep 1
+        done
+
+        if [ -n "$SIGNALS" ]; then
+            WIFI_STATS="$(echo "$SIGNALS" | tr ' ' '\n' | grep -E '^-?[0-9]+$' | awk '
+                BEGIN {min=999; max=-999; sum=0; n=0}
+                {
+                    if ($1+0 < min) min=$1+0;
+                    if ($1+0 > max) max=$1+0;
+                    sum+=$1; n++
+                }
+                END {if(n>0) printf "%d %d %.1f %d\n", min, max, sum/n, max-min; else print "0 0 0 0"}
+            ')"
+            WIFI_MIN_SIGNAL="$(echo "$WIFI_STATS" | awk '{print $1}')"
+            WIFI_MAX_SIGNAL="$(echo "$WIFI_STATS" | awk '{print $2}')"
+            WIFI_AVG_SIGNAL="$(echo "$WIFI_STATS" | awk '{print $3}')"
+            WIFI_VARIATION="$(echo "$WIFI_STATS" | awk '{print $4}')"
+            write_log "RSSI: Min: ${WIFI_MIN_SIGNAL}dBm | Max: ${WIFI_MAX_SIGNAL}dBm | Avg: ${WIFI_AVG_SIGNAL}dBm (Вариативность: ${WIFI_VARIATION}dBm)"
+        fi
+
+        # Детальная информация об интерфейсе
+        if cmd_exists iwconfig; then
+            iwconfig "$WIFI_IFACE" 2>/dev/null >> "$LOG_FILE"
+        fi
+        if cmd_exists iw; then
+            iw dev "$WIFI_IFACE" link 2>/dev/null >> "$LOG_FILE"
+        fi
+
+        # Сканирование окружающих сетей (обычно нужен root, но пробуем)
+        write_log_header "ОКРУЖАЮЩИЕ WI-FI СЕТИ"
+        if cmd_exists nmcli; then
+            # nmcli может показать кэшированные результаты без sudo
+            SCAN_RESULT="$(nmcli -f SSID,SIGNAL,BARS,CHAN,SECURITY dev wifi list 2>/dev/null)"
+            if [ -n "$SCAN_RESULT" ]; then
+                echo "$SCAN_RESULT" >> "$LOG_FILE"
+                NET_COUNT="$(echo "$SCAN_RESULT" | tail -n +2 | grep -c '[^ ]')"
+                write_log "Обнаружено соседних сетей: $NET_COUNT"
+                if [ "$NET_COUNT" -gt 15 ] 2>/dev/null; then
+                    write_log "  ! Эфир сильно зашумлен (более 15 сетей). Рекомендуется 5GHz."
+                fi
+            else
+                write_log "Сканирование Wi-Fi недоступно без sudo."
+            fi
+        elif cmd_exists iw; then
+            # iw scan требует root; пытаемся, но не расстраиваемся
+            SCAN_RESULT="$(iw dev "$WIFI_IFACE" scan 2>&1)"
+            if echo "$SCAN_RESULT" | grep -q "Permission denied\|Operation not permitted"; then
+                write_log "Сканирование Wi-Fi недоступно без sudo (iw)."
+            else
+                echo "$SCAN_RESULT" | grep -E 'SSID|signal|freq' | head -60 >> "$LOG_FILE"
+            fi
+        fi
+    else
+        write_log "Тип подключения: Проводное (Ethernet) или Wi-Fi не обнаружен"
+        # Показываем активные Ethernet-интерфейсы
+        if cmd_exists ip; then
+            ip link show 2>/dev/null | grep -E 'state UP|eth|en' >> "$LOG_FILE"
+            # Скорость линка (если доступна)
+            for iface in $(ip -o link show up 2>/dev/null | awk -F: '{print $2}' | tr -d ' ' | grep -vE '^lo$|^docker|^veth|^br-'); do
+                SPEED="$(cat /sys/class/net/"$iface"/speed 2>/dev/null || echo 'N/A')"
+                DUPLEX="$(cat /sys/class/net/"$iface"/duplex 2>/dev/null || echo 'N/A')"
+                if [ "$SPEED" != "N/A" ] && [ "$SPEED" != "-1" ] 2>/dev/null; then
+                    write_log "Интерфейс $iface: ${SPEED} Mbps / Duplex: ${DUPLEX}"
+                fi
+            done
+        elif cmd_exists ifconfig; then
+            ifconfig 2>/dev/null | grep -B1 'inet ' | grep -v '127.0.0.1' >> "$LOG_FILE"
+        fi
+    fi
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 5. АКТИВНЫЕ ПРОГРАММЫ И РАСШИРЕНИЯ ---
+# ==============================================================================
+write_step "5/12" "Сетевая активность и браузеры"
+write_log_header "ТОП ПРОГРАММ ПО СЕТЕВЫМ СОЕДИНЕНИЯМ"
+
+# --- Список активных TCP-соединений ---
+if cmd_exists ss; then
+    # ss — современная замена netstat (Linux)
+    TOTAL_TCP="$(ss -tn state established 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')"
+    write_log "Всего активных TCP-соединений (ESTABLISHED): $TOTAL_TCP"
+    # Группируем по PID/процессу (ss -tnp может требовать sudo для PID)
+    SS_OUTPUT="$(ss -tnp state established 2>/dev/null)"
+    if echo "$SS_OUTPUT" | grep -q 'users:'; then
+        # PID доступны — группируем
+        echo "$SS_OUTPUT" | grep -oP '"\K[^"]+' | sort | uniq -c | sort -rn | head -10 | while read -r cnt proc; do
+            write_log "Процесс: $(printf '%-20s' "$proc") | Соединений: $cnt"
+        done
+    else
+        write_log "PID процессов недоступны без sudo. Показываем по портам:"
+        ss -tn state established 2>/dev/null | awk 'NR>1 {print $4}' | grep -oE ':[0-9]+$' | sort | uniq -c | sort -rn | head -10 | while read -r cnt port; do
+            write_log "Порт: $(printf '%-10s' "$port") | Соединений: $cnt"
+        done
+    fi
+elif cmd_exists netstat; then
+    # netstat — работает везде (macOS, старые Linux)
+    TOTAL_TCP="$(netstat -an 2>/dev/null | grep 'ESTABLISHED' | wc -l | tr -d ' ')"
+    write_log "Всего активных TCP-соединений (ESTABLISHED): $TOTAL_TCP"
+    if [ "$OS_TYPE" = "Darwin" ]; then
+        # macOS netstat: -v показывает PID
+        netstat -anv -p tcp 2>/dev/null | grep 'ESTABLISHED' | awk '{print $9}' | sort | uniq -c | sort -rn | head -10 | while read -r cnt pid; do
+            PNAME="$(ps -p "$pid" -o comm= 2>/dev/null || echo 'N/A')"
+            write_log "PID: $(printf '%-8s' "$pid") ($PNAME) | Соединений: $cnt"
+        done
+    else
+        # Linux netstat -tnp для PID (может требовать sudo)
+        netstat -tnp 2>/dev/null | grep 'ESTABLISHED' | awk '{print $7}' | sort | uniq -c | sort -rn | head -10 | while read -r cnt proc; do
+            write_log "Процесс: $(printf '%-20s' "$proc") | Соединений: $cnt"
+        done
+    fi
+fi
+
+# --- Расширения браузеров ---
+write_log_header "РАСШИРЕНИЯ БРАУЗЕРОВ"
+
+# Функция сканирования расширений Chromium-based браузеров
+# Аргументы: $1 = имя браузера, $2 = путь к папке Extensions
+scan_chromium_extensions() {
+    local browser_name="$1" ext_path="$2"
+    if [ -d "$ext_path" ]; then
+        write_log ">>> ${browser_name}:"
+        # Перебираем подпапки расширений
+        for ext_dir in "$ext_path"/*/; do
+            [ -d "$ext_dir" ] || continue
+            local ext_id ext_name
+            ext_id="$(basename "$ext_dir")"
+            ext_name="$ext_id"
+            # Пытаемся найти manifest.json и извлечь имя расширения
+            local manifest
+            manifest="$(find "$ext_dir" -name 'manifest.json' -maxdepth 2 -type f 2>/dev/null | head -1)"
+            if [ -n "$manifest" ] && [ -f "$manifest" ]; then
+                # Извлекаем "name" из JSON без jq (через grep/sed)
+                local parsed_name
+                parsed_name="$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$manifest" 2>/dev/null | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+                # Пропускаем __MSG_ (это ссылки на локализацию, не реальное имя)
+                if [ -n "$parsed_name" ] && ! echo "$parsed_name" | grep -q '__MSG_'; then
+                    ext_name="$parsed_name"
+                fi
+            fi
+            write_log "  - $ext_name"
+        done
+    fi
+}
+
+# Определяем домашний каталог пользователя
+HOME_DIR="${HOME:-$(eval echo ~)}"
+
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: пути к расширениям Chromium-браузеров
+    scan_chromium_extensions "Chrome" "$HOME_DIR/Library/Application Support/Google/Chrome/Default/Extensions"
+    scan_chromium_extensions "Edge" "$HOME_DIR/Library/Application Support/Microsoft Edge/Default/Extensions"
+    scan_chromium_extensions "Opera" "$HOME_DIR/Library/Application Support/com.operasoftware.Opera/Extensions"
+    scan_chromium_extensions "Yandex" "$HOME_DIR/Library/Application Support/Yandex/YandexBrowser/Default/Extensions"
+    scan_chromium_extensions "Brave" "$HOME_DIR/Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions"
+    scan_chromium_extensions "Vivaldi" "$HOME_DIR/Library/Application Support/Vivaldi/Default/Extensions"
+else
+    # Linux: пути к расширениям Chromium-браузеров
+    scan_chromium_extensions "Chrome" "$HOME_DIR/.config/google-chrome/Default/Extensions"
+    scan_chromium_extensions "Chromium" "$HOME_DIR/.config/chromium/Default/Extensions"
+    scan_chromium_extensions "Edge" "$HOME_DIR/.config/microsoft-edge/Default/Extensions"
+    scan_chromium_extensions "Opera" "$HOME_DIR/.config/opera/Extensions"
+    scan_chromium_extensions "Yandex" "$HOME_DIR/.config/yandex-browser/Default/Extensions"
+    scan_chromium_extensions "Brave" "$HOME_DIR/.config/BraveSoftware/Brave-Browser/Default/Extensions"
+    scan_chromium_extensions "Vivaldi" "$HOME_DIR/.config/vivaldi/Default/Extensions"
+fi
+
+# --- Firefox ---
+write_log_header "РАСШИРЕНИЯ FIREFOX"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    FF_PROFILES_DIR="$HOME_DIR/Library/Application Support/Firefox/Profiles"
+else
+    FF_PROFILES_DIR="$HOME_DIR/.mozilla/firefox"
+fi
+
+if [ -d "$FF_PROFILES_DIR" ]; then
+    for profile_dir in "$FF_PROFILES_DIR"/*/; do
+        [ -d "$profile_dir" ] || continue
+        ADDONS_FILE="${profile_dir}extensions.json"
+        if [ -f "$ADDONS_FILE" ]; then
+            PROFILE_NAME="$(basename "$profile_dir")"
+            write_log "Профиль: $PROFILE_NAME"
+            # Парсим extensions.json без jq — извлекаем имена аддонов через grep/sed
+            # Ищем паттерн "name":"..." рядом с "active":true/false
+            grep -oE '"name":"[^"]*"' "$ADDONS_FILE" 2>/dev/null | sed 's/"name":"//;s/"$//' | while IFS= read -r addon_name; do
+                # Пропускаем системные/внутренние
+                if ! echo "$addon_name" | grep -qiE '^(Default|Mozilla|Firefox|System)'; then
+                    write_log "  - $addon_name"
+                fi
+            done
+        fi
+    done
+else
+    write_log "Firefox не установлен или профиль не найден."
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 6. ТАБЛИЦЫ ---
+# ==============================================================================
+write_step "6/12" "Маршруты и ARP"
+
+# --- Полная конфигурация IP ---
+write_log_header "ПОЛНАЯ КОНФИГУРАЦИЯ IP"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    ifconfig 2>/dev/null >> "$LOG_FILE"
+    # Показываем DNS-серверы из scutil
+    scutil --dns 2>/dev/null | grep -E 'nameserver|search domain' >> "$LOG_FILE"
+else
+    if cmd_exists ip; then
+        ip addr show 2>/dev/null >> "$LOG_FILE"
+        echo "" >> "$LOG_FILE"
+        # DNS-серверы из resolv.conf
+        write_log "DNS серверы (resolv.conf):"
+        cat /etc/resolv.conf 2>/dev/null | grep -vE '^\s*#|^\s*$' >> "$LOG_FILE"
+    elif cmd_exists ifconfig; then
+        ifconfig -a 2>/dev/null >> "$LOG_FILE"
+    fi
+fi
+
+# --- Таблица маршрутизации ---
+write_log_header "ТАБЛИЦА МАРШРУТИЗАЦИИ"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    netstat -rn 2>/dev/null >> "$LOG_FILE"
+else
+    if cmd_exists ip; then
+        ip route show 2>/dev/null >> "$LOG_FILE"
+        echo "" >> "$LOG_FILE"
+        ip -6 route show 2>/dev/null | head -10 >> "$LOG_FILE"
+    else
+        netstat -rn 2>/dev/null >> "$LOG_FILE"
+    fi
+fi
+
+# --- Таблица ARP ---
+write_log_header "ТАБЛИЦА ARP (MAC-АДРЕСА УСТРОЙСТВ)"
+if cmd_exists ip; then
+    ip neigh show 2>/dev/null >> "$LOG_FILE"
+else
+    arp -a 2>/dev/null >> "$LOG_FILE"
+fi
+
+# --- Диапазон эфемерных портов ---
+write_log_header "ЛИМИТЫ ДИНАМИЧЕСКИХ ПОРТОВ (Ephemeral Ports)"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    sysctl net.inet.ip.portrange.first net.inet.ip.portrange.last 2>/dev/null >> "$LOG_FILE"
+else
+    if [ -f /proc/sys/net/ipv4/ip_local_port_range ]; then
+        write_log "Диапазон: $(cat /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null)"
+    fi
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 7. ШЛЮЗ ---
+# ==============================================================================
+write_step "7/12" "Связь со шлюзом"
+write_log_header "ПРОВЕРКА ДОМАШНЕГО ОБОРУДОВАНИЯ (ШЛЮЗ)"
+
+# Получаем IP-адрес(а) шлюза по умолчанию
+GATEWAYS=""
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: route -n get default выдаёт gateway
+    GATEWAYS="$(netstat -rn 2>/dev/null | awk '/^default/ {print $2}' | sort -u)"
+else
+    if cmd_exists ip; then
+        GATEWAYS="$(ip route show default 2>/dev/null | awk '/default/ {print $3}' | sort -u)"
+    else
+        GATEWAYS="$(netstat -rn 2>/dev/null | awk '/^0\.0\.0\.0/ {print $2}' | sort -u)"
+    fi
+fi
+
+# Пингуем каждый шлюз 16 раз
+if [ -n "$GATEWAYS" ]; then
+    for gw in $GATEWAYS; do
+        # Пропускаем невалидные/нулевые адреса
+        if [ "$gw" = "0.0.0.0" ] || [ -z "$gw" ]; then continue; fi
+        write_log "Тестирование шлюза: $gw"
+        # -c 16 = 16 пакетов, -W 1 = таймаут 1 сек
+        ping -c 16 -W 1 "$gw" 2>&1 >> "$LOG_FILE"
+    done
+else
+    write_log "  ! Шлюз по умолчанию не найден."
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 8. DNS / SSL / HTTP ---
+# ==============================================================================
+write_step "8/12" "DNS, SSL и порты"
+
+# --- Замер скорости DNS ---
+write_log_header "АНАЛИЗ DNS"
+DNS_SYSTEM="$(measure_dns "" "google.com")"
+DNS_EXT="$(measure_dns "$MAIN_DNS" "google.com")"
+write_log "Ответ DNS: Системный = ${DNS_SYSTEM}ms | Внешний ($MAIN_DNS) = ${DNS_EXT}ms"
+
+# --- Проверка DNS-спуфинга ---
+# Сравниваем IP от системного DNS и от внешнего публичного DNS
+DNS_SPOOF=0
+SYS_IP="" ; EXT_IP=""
+if cmd_exists dig; then
+    SYS_IP="$(dig +short google.com A 2>/dev/null | head -1)"
+    EXT_IP="$(dig +short @"$MAIN_DNS" google.com A 2>/dev/null | head -1)"
+elif cmd_exists host; then
+    SYS_IP="$(host -t A google.com 2>/dev/null | awk '/has address/ {print $4}' | head -1)"
+    EXT_IP="$(host -t A google.com "$MAIN_DNS" 2>/dev/null | awk '/has address/ {print $4}' | head -1)"
+fi
+if [ -n "$SYS_IP" ] && [ -n "$EXT_IP" ] && [ "$SYS_IP" != "$EXT_IP" ]; then
+    DNS_SPOOF=1
+    write_log "  ! ВНИМАНИЕ: Системный DNS ($SYS_IP) != Внешний DNS ($EXT_IP). Возможен спуфинг!"
+else
+    write_log "DNS спуфинг: Не обнаружен (Системный=$SYS_IP, Внешний=$EXT_IP)"
+fi
+
+# --- Подробный анализ DNS ---
+write_log_header "АНАЛИЗ СИСТЕМНОГО DNS"
+NS_TARGET="${TARGET_SITE:-a1.by}"
+write_log "DNS-серверы системы:"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    scutil --dns 2>/dev/null | grep 'nameserver\[' | sort -u | while IFS= read -r line; do
+        write_log "  $line"
+    done
+else
+    grep '^nameserver' /etc/resolv.conf 2>/dev/null | while IFS= read -r line; do
+        write_log "  $line"
+    done
+    # systemd-resolve может иметь свой список
+    if cmd_exists resolvectl; then
+        resolvectl status 2>/dev/null | grep -E 'DNS Servers|DNS Domain' | while IFS= read -r line; do
+            write_log "  (resolvectl) $line"
+        done
+    fi
+fi
+
+write_log "Запрос DNS для $NS_TARGET:"
+if cmd_exists dig; then
+    dig "$NS_TARGET" A +noall +answer 2>/dev/null >> "$LOG_FILE"
+    dig "$NS_TARGET" AAAA +noall +answer 2>/dev/null >> "$LOG_FILE"
+elif cmd_exists host; then
+    host "$NS_TARGET" 2>/dev/null >> "$LOG_FILE"
+elif cmd_exists nslookup; then
+    nslookup "$NS_TARGET" 2>/dev/null >> "$LOG_FILE"
+else
+    # Fallback: ping -c1 для резолва
+    RESOLVED_IP="$(ping -c 1 -W 2 "$NS_TARGET" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')"
+    write_log "Resolved (ping fallback): $NS_TARGET -> $RESOLVED_IP"
+fi
+
+# --- WHOIS/ASN информация ---
+write_log_header "КТО ВЛАДЕЕТ IP (WHOIS/ASN)"
+IP_FOR_INFO=""
+# Если целевой адрес уже IP — используем как есть
+if echo "$MTR_DEST" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+    IP_FOR_INFO="$MTR_DEST"
+else
+    # Резолвим имя в IP
+    if cmd_exists dig; then
+        IP_FOR_INFO="$(dig +short "$MTR_DEST" A 2>/dev/null | head -1)"
+    elif cmd_exists host; then
+        IP_FOR_INFO="$(host -t A "$MTR_DEST" 2>/dev/null | awk '/has address/ {print $4}' | head -1)"
+    else
+        IP_FOR_INFO="$(ping -c 1 -W 2 "$MTR_DEST" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    fi
+fi
+
+IS_CLOUDFLARE=0
+if [ -n "$IP_FOR_INFO" ]; then
+    # Используем curl для запроса к ip-api.com
+    if cmd_exists curl; then
+        WHOIS_JSON="$(curl -s --max-time 5 "http://ip-api.com/json/${IP_FOR_INFO}?fields=status,message,isp,as,country,org" 2>/dev/null)"
+    elif cmd_exists wget; then
+        WHOIS_JSON="$(wget -q -O - --timeout=5 "http://ip-api.com/json/${IP_FOR_INFO}?fields=status,message,isp,as,country,org" 2>/dev/null)"
+    else
+        WHOIS_JSON=""
+        write_log "curl/wget не найдены, WHOIS-запрос невозможен."
+    fi
+
+    if [ -n "$WHOIS_JSON" ]; then
+        # Парсим JSON без jq через grep/sed
+        WHOIS_STATUS="$(echo "$WHOIS_JSON" | grep -o '"status":"[^"]*"' | sed 's/"status":"//;s/"$//')"
+        if [ "$WHOIS_STATUS" = "success" ]; then
+            WHOIS_ISP="$(echo "$WHOIS_JSON" | grep -o '"isp":"[^"]*"' | sed 's/"isp":"//;s/"$//')"
+            WHOIS_AS="$(echo "$WHOIS_JSON" | grep -o '"as":"[^"]*"' | sed 's/"as":"//;s/"$//')"
+            WHOIS_COUNTRY="$(echo "$WHOIS_JSON" | grep -o '"country":"[^"]*"' | sed 's/"country":"//;s/"$//')"
+            WHOIS_ORG="$(echo "$WHOIS_JSON" | grep -o '"org":"[^"]*"' | sed 's/"org":"//;s/"$//')"
+            ISP_NAME="${WHOIS_ISP:-$WHOIS_ORG}"
+            write_log "Узел: $IP_FOR_INFO | Провайдер: $ISP_NAME | Страна: $WHOIS_COUNTRY | ASN: $WHOIS_AS"
+            if echo "$ISP_NAME" | grep -qi "Cloudflare"; then
+                IS_CLOUDFLARE=1
+            fi
+        else
+            WHOIS_MSG="$(echo "$WHOIS_JSON" | grep -o '"message":"[^"]*"' | sed 's/"message":"//;s/"$//')"
+            write_log "Узел: $IP_FOR_INFO | API вернул ошибку: $WHOIS_MSG"
+        fi
+    fi
+else
+    write_log "Не удалось определить IP для WHOIS-запроса."
+fi
+
+# --- HTTP/SSL анализ ---
+write_log_header "АНАЛИЗ HTTP/SSL"
+if cmd_exists curl; then
+    # HTTP HEAD запрос
+    HTTP_RESULT="$(curl -sI --max-time 5 -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36' "https://${SSL_TEST_HOST}" 2>&1)"
+    HTTP_STATUS="$(echo "$HTTP_RESULT" | head -1)"
+    HTTP_SERVER="$(echo "$HTTP_RESULT" | grep -i '^server:' | head -1 | sed 's/[Ss]erver:[[:space:]]*//')"
+    write_log "HTTP Status: $HTTP_STATUS"
+    if [ -n "$HTTP_SERVER" ]; then
+        write_log "Server: $HTTP_SERVER"
+    fi
+
+    # SSL-сертификат через curl -v
+    SSL_OUTPUT="$(curl -svI --max-time 5 "https://${SSL_TEST_HOST}" 2>&1)"
+    SSL_SUBJECT="$(echo "$SSL_OUTPUT" | grep -i 'subject:' | head -1 | sed 's/.*subject: //')"
+    SSL_EXPIRE="$(echo "$SSL_OUTPUT" | grep -i 'expire date:' | head -1 | sed 's/.*expire date: //')"
+    SSL_ISSUER="$(echo "$SSL_OUTPUT" | grep -i 'issuer:' | head -1 | sed 's/.*issuer: //')"
+
+    if [ -n "$SSL_SUBJECT" ]; then
+        write_log "SSL Cert: OK | Кому: $SSL_SUBJECT | Истекает: $SSL_EXPIRE"
+        write_log "Издатель: $SSL_ISSUER"
+    else
+        write_log "SSL: Не удалось получить информацию о сертификате."
+    fi
+elif cmd_exists openssl; then
+    # Фоллбэк: openssl для SSL-информации
+    SSL_OUTPUT="$(echo | openssl s_client -connect "${SSL_TEST_HOST}:443" -servername "$SSL_TEST_HOST" 2>/dev/null)"
+    if [ -n "$SSL_OUTPUT" ]; then
+        SSL_SUBJECT="$(echo "$SSL_OUTPUT" | openssl x509 -noout -subject 2>/dev/null | sed 's/subject= //')"
+        SSL_DATES="$(echo "$SSL_OUTPUT" | openssl x509 -noout -dates 2>/dev/null)"
+        write_log "SSL Subject: $SSL_SUBJECT"
+        write_log "SSL Dates: $SSL_DATES"
+    else
+        write_log "SSL ОШИБКА: Не удалось подключиться к ${SSL_TEST_HOST}:443"
+    fi
+fi
+
+# --- Сканирование портов ---
+write_log_header "СКАНИРОВАНИЕ ПОРТОВ"
+TOP_PORTS="21 22 23 25 53 80 110 139 143 443 445 465 587 993 995 1433 3306 3389 5432 5900 8080 8443"
+
+# Определяем хост для сканирования
+PORT_TARGET="${TARGET_SITE:-$MAIN_DNS}"
+write_log "Сканирование портов для: $PORT_TARGET"
+
+# Запускаем проверки портов параллельно через фоновые процессы
+# Временный файл для результатов
+PORT_RESULTS_FILE="$(mktemp "${TMPDIR:-/tmp}/a1diag_ports.XXXXXX")"
+
+for port in $TOP_PORTS; do
+    # Каждая проверка порта выполняется в фоне
+    (
+        if test_port_quick "$PORT_TARGET" "$port" 1; then
+            echo "$port ОТКРЫТ" >> "$PORT_RESULTS_FILE"
+        else
+            echo "$port ЗАКРЫТ" >> "$PORT_RESULTS_FILE"
+        fi
+    ) &
+done
+
+# Ждём завершения всех фоновых задач
+wait
+
+# Сортируем и записываем результаты
+if [ -f "$PORT_RESULTS_FILE" ]; then
+    sort -n "$PORT_RESULTS_FILE" | while IFS=' ' read -r port status; do
+        write_log "Порт: $(printf '%-5s' "$port") | Статус: $status"
+    done
+    rm -f "$PORT_RESULTS_FILE"
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 9. MTR (КАСТОМНАЯ РЕАЛИЗАЦИЯ ТРАССИРОВКИ + СТАТИСТИКИ) ---
+# ==============================================================================
+write_step "9/12" "Анализ стабильности (MTR)"
+write_log_header "ГЛУБОКИЙ АНАЛИЗ ПУТИ (MTR К $MTR_DEST)"
+
+# --- Резолвим целевой адрес в IP ---
+MTR_IP=""
+if echo "$MTR_DEST" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+    MTR_IP="$MTR_DEST"
+else
+    if cmd_exists dig; then
+        MTR_IP="$(dig +short "$MTR_DEST" A 2>/dev/null | head -1)"
+    elif cmd_exists host; then
+        MTR_IP="$(host -t A "$MTR_DEST" 2>/dev/null | awk '/has address/ {print $4}' | head -1)"
+    else
+        MTR_IP="$(ping -c 1 -W 2 "$MTR_DEST" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    fi
+fi
+MTR_IP="${MTR_IP:-$MTR_DEST}"
+
+# --- Используем встроенный mtr если доступен, иначе собираем данные через traceroute + ping ---
+if cmd_exists mtr; then
+    # mtr --report делает 10 циклов и выдаёт статистику
+    write_log "Используется встроенный mtr (30 циклов)..."
+    mtr --report --report-cycles 30 --no-dns "$MTR_IP" 2>/dev/null >> "$LOG_FILE"
+
+    # Извлекаем jitter первого хопа для итогов (парсим вывод mtr)
+    MTR_OUTPUT="$(mtr --report --report-cycles 30 --no-dns "$MTR_IP" 2>/dev/null)"
+    # Формат строки mtr: HOST Loss% Snt Last Avg Best Wrst StDev
+    FIRST_HOP_LOSS="$(echo "$MTR_OUTPUT" | awk 'NR==3 {gsub(/%/,""); print $3}')"
+    FIRST_HOP_JITTER="$(echo "$MTR_OUTPUT" | awk 'NR==3 {print $8}')"  # StDev ~ jitter
+    FIRST_HOP_LOSS="${FIRST_HOP_LOSS:-0}"
+    FIRST_HOP_JITTER="${FIRST_HOP_JITTER:-0}"
+elif cmd_exists traceroute; then
+    # Фоллбэк: traceroute + серия пингов по хопам
+    write_log "mtr не найден. Используется traceroute + серия пингов..."
+
+    # Получаем список хопов через traceroute (UDP по умолчанию, ICMP через -I может требовать root)
+    write_log "Трассировка до $MTR_IP..."
+    # -n = без DNS, -m 25 = макс 25 хопов, -w 2 = таймаут 2 сек
+    TRACE_OUTPUT="$(traceroute -n -m 25 -w 2 "$MTR_IP" 2>/dev/null)"
+    echo "$TRACE_OUTPUT" >> "$LOG_FILE"
+
+    # Извлекаем IP-адреса хопов из вывода traceroute
+    HOP_IPS="$(echo "$TRACE_OUTPUT" | awk '{for(i=2;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {print NR-1, $i; break}}')"
+
+    # Пингуем каждый хоп 10 раз для статистики
+    write_log ""
+    printf "%-3s | %-15s | %-6s | %-6s | %-6s\n" "Хоп" "IP Адрес" "Отпр." "Пот." "Ср.мс" >> "$LOG_FILE"
+
+    FIRST_HOP_LOSS=0
+    FIRST_HOP_JITTER=0
+
+    echo "$HOP_IPS" | while IFS=' ' read -r hop_num hop_ip; do
+        [ -z "$hop_ip" ] && continue
+        # Пингуем хоп 10 раз
+        PING_OUTPUT="$(ping -c 10 -W 1 -q "$hop_ip" 2>&1)"
+        # Извлекаем статистику из строки "X packets transmitted, Y received, Z% packet loss"
+        SENT="$(echo "$PING_OUTPUT" | grep -oE '[0-9]+ packets transmitted' | grep -oE '[0-9]+')"
+        RECV="$(echo "$PING_OUTPUT" | grep -oE '[0-9]+ received' | grep -oE '[0-9]+')"
+        LOSS_PCT="$(echo "$PING_OUTPUT" | grep -oE '[0-9.]+% packet loss' | grep -oE '[0-9.]+')"
+        # Среднее время из строки "rtt min/avg/max/mdev = ..."
+        AVG_MS="$(echo "$PING_OUTPUT" | grep -oE 'avg/[^/]*/[0-9.]+' | head -1 | cut -d/ -f2)"
+        AVG_MS="${AVG_MS:-$(echo "$PING_OUTPUT" | grep -oE '[0-9.]+/[0-9.]+/[0-9.]+/[0-9.]+' | head -1 | cut -d/ -f2)}"
+        LOST=$((${SENT:-10} - ${RECV:-0}))
+
+        printf "%-3s | %-15s | %-6s | %-6s | %-6s\n" "$hop_num" "$hop_ip" "${SENT:-10}" "$LOST" "${AVG_MS:-*}" >> "$LOG_FILE"
+
+        # Сохраняем данные первого хопа для итогов
+        if [ "$hop_num" = "1" ]; then
+            # Записываем во временный файл, т.к. мы в подоболочке (pipe)
+            echo "${LOSS_PCT:-0}" > "${TMPDIR:-/tmp}/a1_first_hop_loss"
+            # mdev — аналог jitter
+            MDEV="$(echo "$PING_OUTPUT" | grep -oE '[0-9.]+/[0-9.]+/[0-9.]+/[0-9.]+' | head -1 | cut -d/ -f4)"
+            echo "${MDEV:-0}" > "${TMPDIR:-/tmp}/a1_first_hop_jitter"
+        fi
+    done
+
+    # Читаем данные первого хопа из временных файлов
+    FIRST_HOP_LOSS="$(cat "${TMPDIR:-/tmp}/a1_first_hop_loss" 2>/dev/null || echo 0)"
+    FIRST_HOP_JITTER="$(cat "${TMPDIR:-/tmp}/a1_first_hop_jitter" 2>/dev/null || echo 0)"
+    rm -f "${TMPDIR:-/tmp}/a1_first_hop_loss" "${TMPDIR:-/tmp}/a1_first_hop_jitter" 2>/dev/null
+else
+    # Ни mtr ни traceroute недоступны — делаем простую трассировку через ping с TTL
+    write_log "mtr и traceroute не найдены. Ручная трассировка через ping..."
+
+    printf "%-3s | %-15s | %-6s\n" "TTL" "IP Адрес" "Время" >> "$LOG_FILE"
+    FIRST_HOP_LOSS=0
+    FIRST_HOP_JITTER=0
+
+    for ttl in $(seq 1 25); do
+        if [ "$OS_TYPE" = "Darwin" ]; then
+            # macOS: ping -m = TTL
+            REPLY="$(ping -c 1 -W 1 -m "$ttl" "$MTR_IP" 2>&1)"
+        else
+            # Linux: ping -t = TTL
+            REPLY="$(ping -c 1 -W 1 -t "$ttl" "$MTR_IP" 2>&1)"
+        fi
+
+        # Извлекаем IP ответившего хоста
+        REPLY_IP="$(echo "$REPLY" | grep -oE 'from [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 | awk '{print $2}')"
+        REPLY_TIME="$(echo "$REPLY" | grep -oE 'time=[0-9.]+' | head -1 | sed 's/time=//')"
+
+        if [ -n "$REPLY_IP" ]; then
+            printf "%-3s | %-15s | %-6s ms\n" "$ttl" "$REPLY_IP" "${REPLY_TIME:-*}" >> "$LOG_FILE"
+            # Если достигли цели — прекращаем
+            if [ "$REPLY_IP" = "$MTR_IP" ]; then
+                break
+            fi
+        else
+            printf "%-3s | %-15s | %-6s\n" "$ttl" "*" "***" >> "$LOG_FILE"
+        fi
+    done
+fi
+write_status_ok
+
+# ==============================================================================
+# --- 10. СКОРОСТЬ (ЗАГРУЗКА БИНАРНЫХ ФАЙЛОВ) ---
+# ==============================================================================
+write_step "10/12" "Измерение скорости"
+write_log_header "ЗАМЕРЫ СКОРОСТИ"
+
+# --- get_speed: Скачивает файл и измеряет скорость ---
+# Аргументы: $1 = URL, $2 = метка (название локации)
+# Выводит: скорость в Mbps
+get_speed() {
+    local url="$1" label="$2"
+    local speed_mbps=0
+
+    if cmd_exists curl; then
+        # curl: --max-time 15 = ограничение 15 секунд, -o /dev/null = не сохранять
+        # -w '%{speed_download}' = скорость в байтах/сек
+        local speed_bytes
+        speed_bytes="$(curl -s -o /dev/null --max-time 15 -w '%{speed_download}' "$url" 2>/dev/null)"
+        if [ -n "$speed_bytes" ] && [ "$speed_bytes" != "0.000" ] 2>/dev/null; then
+            # Конвертируем байты/сек в Мбит/сек: speed * 8 / 1000000
+            speed_mbps="$(awk "BEGIN {printf \"%.2f\", $speed_bytes * 8 / 1000000}")"
+        fi
+    elif cmd_exists wget; then
+        # wget: замеряем время скачивания первых ~15 МБ
+        local start_time end_time downloaded
+        start_time="$(date +%s)"
+        wget -q -O /dev/null --timeout=15 "$url" 2>/dev/null &
+        local wget_pid=$!
+        # Ждём 15 секунд или пока завершится
+        sleep 15
+        kill "$wget_pid" 2>/dev/null
+        wait "$wget_pid" 2>/dev/null
+        # Без точного размера оценить скорость через wget сложно
+        speed_mbps="N/A (wget)"
+    fi
+
+    write_log "Локация: $(printf '%-12s' "$label") | Скорость: $speed_mbps Mbps"
+    echo "$speed_mbps"
+}
+
+write_log "Запуск тестирования скорости (лимит 15 сек на каждый узел)..."
+
+# Запускаем тесты последовательно (параллельно исказят результат)
+S1="$(get_speed "https://lg.hosterby.com/1GB.test" "Беларусь")"
+S2="$(get_speed "https://speedtest.selectel.ru/1GB" "Россия (МСК)")"
+S3="$(get_speed "https://waw-pl-ping.vultr.com/vultr.com.1000MB.bin" "Польша (WAW)")"
+S4="$(get_speed "https://fra-de-ping.vultr.com/vultr.com.1000MB.bin" "Европа (FRA)")"
+write_status_ok
+
+# ==============================================================================
+# --- 11. ПИНГ ЦЕЛЕВЫХ ХОСТОВ ---
+# ==============================================================================
+write_step "11/12" "Пинг целей и вердикт"
+write_log_header "ПИНГ ЦЕЛЕВЫХ ХОСТОВ"
+
+for target in $TARGETS; do
+    write_log "--- Пинг $target ---"
+    # -c 10 = 10 пакетов, -W 2 = таймаут
+    ping -c 10 -W 2 "$target" 2>&1 >> "$LOG_FILE"
+    echo "" >> "$LOG_FILE"
+done
+
+# ==============================================================================
+# --- ИТОГИ И ЭВРИСТИКА ---
+# ==============================================================================
+write_log_header "ИТОГОВОЕ РЕЗЮМЕ"
+
+# --- Публичный IP ---
+PUB_IP="Error"
+if cmd_exists curl; then
+    PUB_IP="$(curl -s --max-time 5 http://ifconfig.me/ip 2>/dev/null | tr -d '[:space:]')"
+elif cmd_exists wget; then
+    PUB_IP="$(wget -q -O - --timeout=5 http://ifconfig.me/ip 2>/dev/null | tr -d '[:space:]')"
+fi
+[ -z "$PUB_IP" ] && PUB_IP="Error"
+
+# --- Определяем CGNAT ---
+IS_CGNAT=0
+if [ "$PUB_IP" != "Error" ]; then
+    # CGNAT диапазон: 100.64.0.0/10 (RFC 6598)
+    if echo "$PUB_IP" | grep -qE '^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.'; then
+        IS_CGNAT=1
+    else
+        # Проверяем совпадает ли публичный IP с каким-либо локальным
+        LOCAL_IPS=""
+        if [ "$OS_TYPE" = "Darwin" ]; then
+            LOCAL_IPS="$(ifconfig 2>/dev/null | grep 'inet ' | awk '{print $2}')"
+        else
+            if cmd_exists ip; then
+                LOCAL_IPS="$(ip -4 addr show 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)"
+            else
+                LOCAL_IPS="$(ifconfig 2>/dev/null | grep 'inet ' | awk '{print $2}' | sed 's/addr://')"
+            fi
+        fi
+        # Если публичный IP не найден среди локальных — вероятно NAT
+        if [ -n "$LOCAL_IPS" ] && ! echo "$LOCAL_IPS" | grep -qF "$PUB_IP"; then
+            IS_CGNAT=1
+        fi
+    fi
+fi
+
+# --- Скорость линка ---
+LINK_SPEED_STR="N/A"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    # macOS: networksetup или ifconfig
+    ACTIVE_IF="$(route -n get default 2>/dev/null | awk '/interface:/ {print $2}')"
+    if [ -n "$ACTIVE_IF" ]; then
+        LINK_INFO="$(ifconfig "$ACTIVE_IF" 2>/dev/null | grep 'media:' | head -1)"
+        LINK_SPEED_STR="${LINK_INFO:-N/A}"
+    fi
+else
+    for iface in $(ip -o link show up 2>/dev/null | awk -F: '{print $2}' | tr -d ' ' | grep -vE '^lo$|^docker|^veth|^br-' | head -1); do
+        SPEED="$(cat /sys/class/net/"$iface"/speed 2>/dev/null)"
+        DUPLEX="$(cat /sys/class/net/"$iface"/duplex 2>/dev/null)"
+        if [ -n "$SPEED" ] && [ "$SPEED" != "-1" ] 2>/dev/null; then
+            LINK_SPEED_STR="${SPEED} Mbps / Duplex: ${DUPLEX:-auto}"
+        fi
+    done
+fi
+
+# --- Формируем выводы ---
+CONCLUSIONS=""
+
+add_conclusion() {
+    CONCLUSIONS="${CONCLUSIONS}${1}\n"
+}
+
+if [ -n "$VPN_DETECTED" ]; then
+    add_conclusion "- ВНИМАНИЕ: Активен VPN ($VPN_DETECTED)."
+fi
+if [ "$IS_WIFI" -eq 1 ]; then
+    add_conclusion "- Используется Wi-Fi (возможны помехи)."
+fi
+if [ "$IS_WIFI" -eq 1 ]; then
+    # Для macOS RSSI: вариативность > 10dBm = нестабильно
+    VARIATION="$(awk "BEGIN {v=$WIFI_MAX_SIGNAL - ($WIFI_MIN_SIGNAL); if(v<0) v=-v; print v}" 2>/dev/null)"
+    if [ "${VARIATION:-0}" -gt 10 ] 2>/dev/null; then
+        add_conclusion "- Нестабильный Wi-Fi: сигнал скачет на ${VARIATION}dBm."
+    fi
+    # Слабый сигнал: RSSI хуже -70 dBm (т.е. число меньше -70)
+    AVG_INT="${WIFI_AVG_SIGNAL%%.*}"
+    if [ "${AVG_INT:-0}" -lt -70 ] 2>/dev/null; then
+        add_conclusion "- Низкий уровень Wi-Fi сигнала (${WIFI_AVG_SIGNAL}dBm). Рекомендуется 5GHz или кабель."
+    fi
+fi
+
+# Потери на первом хопе
+FHL_INT="${FIRST_HOP_LOSS%%.*}"
+if [ "${FHL_INT:-0}" -gt 1 ] 2>/dev/null; then
+    add_conclusion "- Проблемы на участке ПК-Роутер (потери ${FIRST_HOP_LOSS}%)."
+fi
+
+# Jitter
+FHJ_INT="${FIRST_HOP_JITTER%%.*}"
+if [ "${FHJ_INT:-0}" -gt 15 ] 2>/dev/null; then
+    add_conclusion "- Нестабильный пинг (Джиттер: ${FIRST_HOP_JITTER}ms)."
+fi
+
+if [ "$MTU_FOUND" -eq 0 ]; then
+    add_conclusion "- Обнаружены проблемы с размером MTU (фрагментация или блокировка ICMP)."
+fi
+
+if [ "$DNS_SPOOF" -eq 1 ]; then
+    add_conclusion "- ВНИМАНИЕ: Обнаружены признаки подмены (спуфинга) DNS."
+fi
+
+if [ "$IS_CGNAT" -eq 1 ]; then
+    add_conclusion "- Используется динамический адрес (CGNAT/Gray IP)."
+else
+    add_conclusion "- У клиента статический (белый) IP."
+fi
+
+if [ "$IS_CLOUDFLARE" -eq 1 ]; then
+    add_conclusion "- Сайт находится за защитой Cloudflare (CDN). Пинг может быть отличным, даже если сервер перегружен."
+fi
+
+# --- Записываем сводку ---
+DOH_STATUS="N/A (проверка DoH в Linux/macOS ограничена)"
+
+{
+    echo ""
+    echo "[КРАТКАЯ СВОДКА]"
+    echo "Лицевой счет: $ACC_NUM | Публичный IP: $PUB_IP"
+    echo "Тип IP: $([ "$IS_CGNAT" -eq 1 ] && echo 'Серый (CGNAT)' || echo 'Белый (Static/Public)')"
+    echo "Link Speed: $LINK_SPEED_STR"
+    echo "Потери на шлюзе: ${FIRST_HOP_LOSS}% | Jitter: ${FIRST_HOP_JITTER} ms"
+    echo "Скорость (BY/RU/PL/DE): $S1 / $S2 / $S3 / $S4 Mbps"
+    echo "DNS Ответ: ${DNS_SYSTEM} ms | Спуфинг: $([ "$DNS_SPOOF" -eq 1 ] && echo 'ДА' || echo 'НЕТ')"
+    echo "VPN: $([ -n "$VPN_DETECTED" ] && echo 'АКТИВЕН' || echo 'НЕТ') | DoH: $DOH_STATUS"
+    echo "CDN/Protection: $([ "$IS_CLOUDFLARE" -eq 1 ] && echo 'Cloudflare detected' || echo 'None/Direct')"
+    echo ""
+    echo ">>> ВЫВОДЫ:"
+    printf "%b" "$CONCLUSIONS"
+} >> "$LOG_FILE"
+
+write_status_ok
+
+# ==============================================================================
+# --- 12. ЗАВЕРШЕНИЕ ---
+# ==============================================================================
+write_step "12/12" "Завершение"
+
+# --- Хэш файла для целостности ---
+if cmd_exists sha256sum; then
+    # Linux
+    HASH="$(sha256sum "$LOG_FILE" | awk '{print $1}')"
+elif cmd_exists shasum; then
+    # macOS
+    HASH="$(shasum -a 256 "$LOG_FILE" | awk '{print $1}')"
+else
+    HASH="nohash"
+fi
+
+# --- Переименовываем файл с хэшем ---
+NEW_LOG_FILENAME="A1-${HASH}.txt"
+NEW_LOG_FILEPATH="${DIAG_DIR}/${NEW_LOG_FILENAME}"
+mv "$LOG_FILE" "$NEW_LOG_FILEPATH" 2>/dev/null || NEW_LOG_FILEPATH="$LOG_FILE"
+
+# --- Звуковое уведомление (BEL) ---
+printf '\a'
+
+# --- Пробуем скопировать email в буфер обмена ---
+if [ "$OS_TYPE" = "Darwin" ]; then
+    echo -n "$SUPPORT_EMAIL" | pbcopy 2>/dev/null
+else
+    if cmd_exists xclip; then
+        echo -n "$SUPPORT_EMAIL" | xclip -selection clipboard 2>/dev/null
+    elif cmd_exists xsel; then
+        echo -n "$SUPPORT_EMAIL" | xsel --clipboard --input 2>/dev/null
+    elif cmd_exists wl-copy; then
+        echo -n "$SUPPORT_EMAIL" | wl-copy 2>/dev/null
+    fi
+fi
+
+# --- Пробуем открыть файловый менеджер с выделением файла ---
+if [ "$OS_TYPE" = "Darwin" ]; then
+    open -R "$NEW_LOG_FILEPATH" 2>/dev/null
+else
+    if cmd_exists xdg-open; then
+        xdg-open "$DIAG_DIR" 2>/dev/null &
+    elif cmd_exists nautilus; then
+        nautilus --select "$NEW_LOG_FILEPATH" 2>/dev/null &
+    fi
+fi
+
+# --- Пробуем открыть почтовый клиент ---
+MAIL_SUBJECT="$(printf '%s' "Диагностика ($DIAG_LABEL) - ЛС $ACC_NUM" | sed 's/ /%20/g;s/(/%28/g;s/)/%29/g')"
+if [ "$OS_TYPE" = "Darwin" ]; then
+    open "mailto:${SUPPORT_EMAIL}?subject=${MAIL_SUBJECT}" 2>/dev/null
+else
+    if cmd_exists xdg-open; then
+        xdg-open "mailto:${SUPPORT_EMAIL}?subject=${MAIL_SUBJECT}" 2>/dev/null &
+    fi
+fi
+
+write_status_ok
+
+# --- ФИНАЛЬНЫЕ ИНСТРУКЦИИ ДЛЯ ПОЛЬЗОВАТЕЛЯ ---
+echo ""
+printf "    ${COLOR_GREEN}✅ Диагностика успешно завершена!${COLOR_RESET}\n"
+printf "  ${COLOR_GRAY}--------------------------------------------------${COLOR_RESET}\n"
+echo "  Мы попытались открыть вашу почту автоматически."
+printf "  ${COLOR_YELLOW}Если письмо не появилось, отправьте файл ВРУЧНУЮ:${COLOR_RESET}\n"
+echo ""
+printf "  1. Кому: ${COLOR_CYAN}%s${COLOR_RESET}" "$SUPPORT_EMAIL"
+printf " ${COLOR_GRAY}(адрес скопирован в буфер)${COLOR_RESET}\n"
+printf "  2. Файл: ${COLOR_CYAN}%s${COLOR_RESET}" "$NEW_LOG_FILENAME"
+printf " ${COLOR_GRAY}(в папке %s)${COLOR_RESET}\n" "$DIAG_DIR"
+printf "  3. Тема: ${COLOR_CYAN}Диагностика ЛС %s${COLOR_RESET}\n" "$ACC_NUM"
+printf "  ${COLOR_GRAY}--------------------------------------------------${COLOR_RESET}\n"
+printf "\n  ${COLOR_YELLOW}Для выхода нажмите клавишу [q] или [Ctrl+C]...${COLOR_RESET}\n"
+
+# Ожидание нажатия клавиши (кроссплатформенно)
+while true; do
+    # read -n1 читает один символ; -t 1 = таймаут 1 сек (чтобы Ctrl+C работал)
+    if IFS= read -rsn1 -t 1 key 2>/dev/null; then
+        if [ "$key" = "q" ] || [ "$key" = "Q" ]; then
+            break
+        fi
+    fi
+done
+
+echo ""
+echo "  Готово. До свидания!"
